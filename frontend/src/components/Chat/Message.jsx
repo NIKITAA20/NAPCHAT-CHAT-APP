@@ -20,6 +20,7 @@ const Message = ({ text, sender }) => {
       </span>
     </div>
   );
+
 };
 
 export default Message;

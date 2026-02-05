@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import socket from "../../services/socket";
+import API from "../../services/api";
 
 export default function Sidebar({ setSelectedUser, selectedUser }) {
   const me = localStorage.getItem("username");
@@ -24,9 +25,9 @@ export default function Sidebar({ setSelectedUser, selectedUser }) {
       setTimeout(() => setTypingFrom(null), 1200);
     });
 
-    fetch(`http://localhost:5000/api/chat/unread/${me}`)
-      .then((res) => res.json())
-      .then(setUnread);
+    API.get(`/chat/unread/${me}`)
+  .then((res) => setUnread(res.data))
+  .catch(console.error);
 
     return () => {
       socket.off("users_list");

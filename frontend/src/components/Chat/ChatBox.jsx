@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import socket from "../../services/socket";
+import API from "../../services/api";
 
 const formatTime = (ts) =>
   new Date(ts).toLocaleTimeString([], {
@@ -48,9 +49,10 @@ export default function ChatBox({ user, onCall, onBack }) {
   useEffect(() => {
     if (!user) return;
 
-    fetch(`http://localhost:5000/api/chat/history/${me}/${user}`)
-      .then((res) => res.json())
-      .then(setMessages);
+  API.get(`/chat/history/${me}/${user}`)
+  .then((res) => setMessages(res.data))
+  .catch(console.error);
+
 
     socket.emit("clear_unread", { me, other: user });
   }, [user]);
@@ -111,12 +113,11 @@ export default function ChatBox({ user, onCall, onBack }) {
     const formData = new FormData();
     formData.append("file", selectedFile);
 
-    const res = await fetch("http://localhost:5000/api/media/upload", {
-      method: "POST",
-      body: formData,
+    const res = await API.post("/media/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
     });
+    const data = res.data;
 
-    const data = await res.json();
 
     socket.emit("private_message", {
       from: me,
