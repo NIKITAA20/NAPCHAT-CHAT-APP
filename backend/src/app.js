@@ -9,12 +9,17 @@ const app = express();
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
     credentials: true,
   })
 );
 
 app.use(express.json());
+
+// health check
+app.get("/api", (req, res) => {
+  res.send("API is working 🚀");
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
