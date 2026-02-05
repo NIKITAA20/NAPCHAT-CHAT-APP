@@ -7,12 +7,13 @@ import chatRoutes from "./routes/chat.routes.js";
 
 const app = express();
 
-app.use(
+  app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: true,          
     credentials: true,
   })
 );
+
 
 app.use(express.json());
 
