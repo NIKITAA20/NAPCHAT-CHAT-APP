@@ -3,7 +3,11 @@ import redis from "./redis.js";
 
 export const initSocket = (server) => {
   const io = new Server(server, {
-    cors: { origin: "http://localhost:5173" },
+    cors: {
+      origin: process.env.CLIENT_URL,
+      methods: ["GET", "POST"],
+      credentials: true,
+    },
   });
 
   io.on("connection", (socket) => {
