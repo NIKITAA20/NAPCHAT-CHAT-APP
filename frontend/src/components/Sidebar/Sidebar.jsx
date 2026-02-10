@@ -12,33 +12,43 @@ export default function Sidebar({ setSelectedUser, selectedUser }) {
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    if (!me) return;
+useEffect(() => {
+  if (!me) return;
 
-    socket.emit("register_user", me);
+ 
+  socket.emit("register_user", me);
 
-    socket.on("users_list", setUsers);
-    socket.on("users_status", setOnlineUsers);
+ 
+  socket.on("users_list", setUsers);
+  socket.on("users_status", setOnlineUsers);
 
-    socket.on("typing", ({ from }) => {
-      setTypingFrom(from);
-      setTimeout(() => setTypingFrom(null), 1200);
-    });
+  socket.on("typing", ({ from }) => {
+    setTypingFrom(from);
+    setTimeout(() => setTypingFrom(null), 1200);
+  });
 
-  useEffect(() => {
-  axios.get("/api/users").then(res => setUsers(res.data));
-    }, []);
+  
+  return () => {
+    socket.off("users_list");
+    socket.off("users_status");
+    socket.off("typing");
+  };
+}, [me]);
 
-    API.get(`/api/chat/unread/${me}`)
-  .then((res) => setUnread(res.data))
-  .catch(console.error);
+useEffect(() => {
+  API.get("/users")
+    .then(res => setUsers(res.data))
+    .catch(console.error);
+}, []);
 
-    return () => {
-      socket.off("users_list");
-      socket.off("users_status");
-      socket.off("typing");
-    };
-  }, [me]);
+
+useEffect(() => {
+  if (!me) return;
+
+  API.get(`/chat/unread/${me}`)
+    .then(res => setUnread(res.data))
+    .catch(console.error);
+}, [me]);
 
   const openChat = (user) => {
     setSelectedUser(user);
