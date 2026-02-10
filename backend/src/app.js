@@ -25,5 +25,10 @@ app.get("/api", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
+app.get("/api/users", async (req, res) => {
+  const users = await redis.sMembers("users:all");
+  res.json(users);
+});
+
 
 export default app;

@@ -13,6 +13,7 @@ export const initSocket = (server) => {
   io.on("connection", (socket) => {
     console.log("🟢 Connected:", socket.id);
 
+  
     /* ================= REGISTER ================= */
     socket.on("register_user", async (username) => {
       socket.username = username;
@@ -28,8 +29,9 @@ export const initSocket = (server) => {
     socket.on("private_message", async (data) => {
       const msg = { ...data, time: Date.now() };
 
-      await redis.rPush(`chat:${data.from}:${data.to}`, JSON.stringify(msg));
-      await redis.rPush(`chat:${data.to}:${data.from}`, JSON.stringify(msg));
+      const chatKey = `chat:${[data.from, data.to].sort().join(":")}`;
+     await redis.rPush(chatKey, JSON.stringify(msg));
+
 
       const receiverSocket = await redis.hGet("users:online", data.to);
       if (receiverSocket) io.to(receiverSocket).emit("receive_message", msg);

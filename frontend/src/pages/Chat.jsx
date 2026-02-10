@@ -95,6 +95,7 @@ export default function Chat() {
               <h2 style={styles.emptyTitle}>Welcome to NAPCHAT</h2>
               <p style={styles.emptyText}>Select a contact to start chatting</p>
             </div>
+            
           )}
         </div>
 

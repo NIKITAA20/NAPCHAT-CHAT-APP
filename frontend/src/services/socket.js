@@ -6,3 +6,4 @@ const socket = io("https://napchat-backend.onrender.com", {
 });
 
 export default socket;
+

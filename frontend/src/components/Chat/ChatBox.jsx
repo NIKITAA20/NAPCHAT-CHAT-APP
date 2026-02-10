@@ -49,7 +49,7 @@ export default function ChatBox({ user, onCall, onBack }) {
   useEffect(() => {
     if (!user) return;
 
-  API.get(`/chat/history/${me}/${user}`)
+  API.get(`/api/chat/history/${me}/${user}`)
   .then((res) => setMessages(res.data))
   .catch(console.error);
 

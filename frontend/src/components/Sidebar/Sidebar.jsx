@@ -25,7 +25,11 @@ export default function Sidebar({ setSelectedUser, selectedUser }) {
       setTimeout(() => setTypingFrom(null), 1200);
     });
 
-    API.get(`/chat/unread/${me}`)
+  useEffect(() => {
+  axios.get("/api/users").then(res => setUsers(res.data));
+    }, []);
+
+    API.get(`/api/chat/unread/${me}`)
   .then((res) => setUnread(res.data))
   .catch(console.error);
 
