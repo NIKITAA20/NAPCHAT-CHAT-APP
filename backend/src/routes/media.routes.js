@@ -5,18 +5,14 @@ import path from "path";
 const router = express.Router();
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
+  destination: "uploads/",
   filename: (req, file, cb) => {
-    const unique = Date.now() + "-" + file.originalname;
-    cb(null, unique);
+    cb(null, Date.now() + "-" + file.originalname);
   },
 });
 
 const upload = multer({ storage });
 
-// ✅ FILE UPLOAD ROUTE
 router.post("/upload", upload.single("file"), (req, res) => {
   res.json({
     fileUrl: `${process.env.BASE_URL}/uploads/${req.file.filename}`,

@@ -1,15 +1,20 @@
 import express from "express";
 import cors from "cors";
+import dotenv from "dotenv";
 
 import authRoutes from "./routes/auth.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import chatRoutes from "./routes/chat.routes.js";
+import mediaRoutes from "./routes/media.routes.js";
+
+dotenv.config();
 
 const app = express();
 
-  app.use(
+
+app.use(
   cors({
-    origin: true,          
+    origin: process.env.CLIENT_URL,   // ✅ frontend URL ONLY
     credentials: true,
   })
 );
@@ -17,18 +22,15 @@ const app = express();
 
 app.use(express.json());
 
-// health check
+
 app.get("/api", (req, res) => {
   res.send("API is working 🚀");
 });
 
+
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
-app.get("/api/users", async (req, res) => {
-  const users = await redis.sMembers("users:all");
-  res.json(users);
-});
-
-
+app.use("/api/media", mediaRoutes);
+app.use("/uploads", express.static("uploads"));
 export default app;
