@@ -36,7 +36,7 @@ useEffect(() => {
 }, [me]);
 
 useEffect(() => {
-  API.get("/users")
+  API.get("/api/users")
     .then(res => setUsers(res.data))
     .catch(console.error);
 }, []);
@@ -45,7 +45,7 @@ useEffect(() => {
 useEffect(() => {
   if (!me) return;
 
-  API.get(`/chat/unread/${me}`)
+  API.get(`/api/chat/unread/${me}`)
     .then(res => setUnread(res.data))
     .catch(console.error);
 }, [me]);
