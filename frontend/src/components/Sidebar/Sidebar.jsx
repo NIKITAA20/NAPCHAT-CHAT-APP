@@ -50,6 +50,20 @@ useEffect(() => {
     .catch(console.error);
 }, [me]);
 
+useEffect(() => {
+  socket.on("unread_update", ({ from, count }) => {
+    setUnread((prev) => ({
+      ...prev,
+      [from]: count,
+    }));
+  });
+
+  return () => {
+    socket.off("unread_update");
+  };
+}, []);
+
+
   const openChat = (user) => {
     setSelectedUser(user);
     localStorage.setItem("activeChat", user);

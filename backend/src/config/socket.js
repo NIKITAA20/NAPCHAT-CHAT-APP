@@ -26,18 +26,32 @@ export const initSocket = (server) => {
     });
 
     /* ================= CHAT ================= */
-    socket.on("private_message", async (data) => {
-      const msg = { ...data, time: Date.now() };
+socket.on("private_message", async (data) => {
+  const { from, to } = data;
 
-      const chatKey = `chat:${[data.from, data.to].sort().join(":")}`;
-     await redis.rPush(chatKey, JSON.stringify(msg));
+  const msg = { ...data, time: Date.now() };
+  const chatKey = `chat:${[from, to].sort().join(":")}`;
 
+  await redis.rPush(chatKey, JSON.stringify(msg));
 
-      const receiverSocket = await redis.hGet("users:online", data.to);
-      if (receiverSocket) io.to(receiverSocket).emit("receive_message", msg);
+  //  increment unread
+  const unreadCount = await redis.hIncrBy(`unread:${to}`, from, 1);
 
-      socket.emit("receive_message", msg);
+  const receiverSocket = await redis.hGet("users:online", to);
+  if (receiverSocket) {
+    io.to(receiverSocket).emit("receive_message", msg);
+
+    //  SEND unread update to receiver
+    io.to(receiverSocket).emit("unread_update", {
+      from,
+      count: unreadCount,
     });
+  }
+
+  socket.emit("receive_message", msg);
+});
+
+
 
     /* ================= CALL START ================= */
     socket.on("call-user", async ({ to, offer }) => {
@@ -103,6 +117,11 @@ export const initSocket = (server) => {
         io.to(receiverSocket).emit("call-ended");
       }
     });
+
+    socket.on("clear_unread", async ({ me, other }) => {
+  await redis.hSet(`unread:${me}`, other, 0);
+});
+
 
     /* ================= CALL END (CONNECTED ONLY) ================= */
     socket.on("end-call", async ({ to }) => {
