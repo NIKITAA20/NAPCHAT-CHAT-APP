@@ -49,7 +49,7 @@ export default function ChatBox({ user, onCall, onBack }) {
   useEffect(() => {
     if (!user) return;
 
-  API.get(`/api/chat/history/${me}/${user}`)
+  API.get(`/chat/history/${me}/${user}`)
   .then((res) => setMessages(res.data))
   .catch(console.error);
 
@@ -113,7 +113,7 @@ export default function ChatBox({ user, onCall, onBack }) {
     const formData = new FormData();
     formData.append("file", selectedFile);
 
-    const res = await API.post("/media/upload", formData, {
+    const res = await API.post("/chat/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
     const data = res.data;

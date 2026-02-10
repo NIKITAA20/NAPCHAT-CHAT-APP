@@ -19,7 +19,7 @@ const upload = multer({ storage });
 // ✅ FILE UPLOAD ROUTE
 router.post("/upload", upload.single("file"), (req, res) => {
   res.json({
-    fileUrl: `http://localhost:5000/uploads/${req.file.filename}`,
+    fileUrl: `${process.env.BASE_URL}/uploads/${req.file.filename}`,
     fileType: req.file.mimetype,
     originalName: req.file.originalname,
   });
