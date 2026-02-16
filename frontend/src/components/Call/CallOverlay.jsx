@@ -42,37 +42,51 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current = new RTCPeerConnection({
       iceServers: [
+        // Multiple STUN servers for better connectivity
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+        // ✅ Metered.ca TURN — replace with YOUR actual credentials from https://www.metered.ca/tools/openrelay/
+        {
+          urls: "turn:a.relay.metered.ca:80",
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
+        {
+          urls: "turn:a.relay.metered.ca:80?transport=tcp",
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
+        {
+          urls: "turn:a.relay.metered.ca:443",
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
+        {
+          urls: "turn:a.relay.metered.ca:443?transport=tcp",
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
       ],
+      iceCandidatePoolSize: 10,
     });
 
-pc.current.oniceconnectionstatechange = () => {
-  console.log("ICE state:", pc.current.iceConnectionState);
-
-  if (
-    pc.current.iceConnectionState === "connected" ||
-    pc.current.iceConnectionState === "completed"
-  ) {
-    setCallStatus("in-call");
-
-    if (!pc.current._timer) {
-      const interval = setInterval(
-        () => setCallDuration((prev) => prev + 1),
-        1000
-      );
-      pc.current._timer = interval;
-    }
-  }
-
-  if (
-    pc.current.iceConnectionState === "disconnected" ||
-    pc.current.iceConnectionState === "failed"
-  ) {
-    cleanup();
-  }
-};
+    pc.current.onconnectionstatechange = () => {
+      console.log("Connection state:", pc.current.connectionState);
+      if (pc.current.connectionState === "connected") {
+        setCallStatus("in-call");
+        const interval = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
+        pc.current._timer = interval;
+      }
+      if (
+        pc.current.connectionState === "disconnected" ||
+        pc.current.connectionState === "failed"
+      ) {
+        cleanup();
+      }
+    };
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("ICE state:", pc.current.iceConnectionState);
@@ -142,11 +156,7 @@ pc.current.oniceconnectionstatechange = () => {
     // so that remote side gets video/audio in the SDP
     await startMedia();
     if (!pc.current) return;
-    const off = await pc.current.createOffer({
-      offerToReceiveVideo: true,
-      offerToReceiveAudio: true
-    });
-
+    const off = await pc.current.createOffer();
     await pc.current.setLocalDescription(off);
     socket.emit("call-user", { to: user, offer: off });
   };
@@ -154,28 +164,27 @@ pc.current.oniceconnectionstatechange = () => {
   // ✅ Guard ref — prevents connectIncoming from running twice (React strict mode / double mount)
   const connectingRef = useRef(false);
 
-const connectIncoming = async () => {
-  if (connectingRef.current || isInCall) return;
-  connectingRef.current = true;
+  const connectIncoming = async () => {
+    // Already connecting or connected — bail out immediately
+    if (connectingRef.current || isInCall) return;
+    connectingRef.current = true;
 
-  setIsInCall(true);
-  createPeer();
-  await startMedia();
+    setIsInCall(true);
+    createPeer();
+    await startMedia();
 
-  if (!pc.current) return;
+    // ✅ Safety — only proceed if peer is in "stable" signaling state
+    if (!pc.current || pc.current.signalingState !== "stable") {
+      console.warn("⚠️ Peer not stable, aborting setRemoteDescription");
+      connectingRef.current = false;
+      return;
+    }
 
-  await pc.current.setRemoteDescription(offer);
-
-  const ans = await pc.current.createAnswer({
-    offerToReceiveVideo: true,
-    offerToReceiveAudio: true
-  });
-
-  await pc.current.setLocalDescription(ans);
-
-  socket.emit("answer-call", { to: user, answer: ans });
-};
-
+    await pc.current.setRemoteDescription(offer);
+    const ans = await pc.current.createAnswer();
+    await pc.current.setLocalDescription(ans);
+    socket.emit("answer-call", { to: user, answer: ans });
+  };
 
   /* ========== SOCKET ========== */
   useEffect(() => {
@@ -244,11 +253,10 @@ const connectIncoming = async () => {
 
   // ✅ Incoming call — directly connect, NO ringing screen here
   // IncomingCall.jsx already showed the ringing UI, user already pressed Accept
-useEffect(() => {
-  if (!incoming || !offer) return;
-  connectIncoming();
-}, [incoming, offer]);
-
+  useEffect(() => {
+    if (!incoming) return;
+    connectIncoming();
+  }, []);
 
   // ✅ KEY FIX: Attach remoteStream to video element AFTER React renders it
   // ontrack fires before video element exists in DOM — so we store stream in state
@@ -344,35 +352,24 @@ useEffect(() => {
           }}
         >
           {/* Remote Video or Avatar */}
-         <div style={styles.remoteContainer}>
-
-  {/* ALWAYS keep video mounted */}
-  <video
-    ref={remoteVideo}
-    autoPlay
-    playsInline
-    style={{
-      ...styles.remote,
-      display: remoteVideoOn ? "block" : "none"
-    }}
-  />
-
-  {/* Show camera off UI separately */}
-  {!remoteVideoOn && (
-    <div style={styles.cameraOffContainer}>
-      <div
-        className="camera-off-avatar"
-        style={styles.cameraOffAvatar}
-      >
-        {user?.charAt(0).toUpperCase()}
-      </div>
-      <p style={styles.cameraOffText}>{user}</p>
-      <p style={styles.cameraOffSubtext}>Camera is off</p>
-    </div>
-  )}
-
-</div>
-
+          <div style={styles.remoteContainer}>
+            {remoteVideoOn ? (
+              <video
+                ref={remoteVideo}
+                autoPlay
+                playsInline
+                style={styles.remote}
+              />
+            ) : (
+              <div style={styles.cameraOffContainer}>
+                <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
+                  {user?.charAt(0).toUpperCase()}
+                </div>
+                <p style={styles.cameraOffText}>{user}</p>
+                <p style={styles.cameraOffSubtext}>Camera is off</p>
+              </div>
+            )}
+          </div>
 
           {/* Local Video */}
           <div className="local-video-container" style={styles.localContainer}>
@@ -507,12 +504,8 @@ useEffect(() => {
 
 const styles = {
   overlay: { position: "fixed", inset: 0, background: "linear-gradient(135deg, #fff5eb 0%, #ffe8d6 100%)", zIndex: 9999, display: "flex" },
- remoteContainer: { 
-  position: "absolute",
-  inset: 0,
-  background: "black"
-},
-  remote: { width: "100%", height: "100%", objectFit: "cover", background: "black" },
+  remoteContainer: { width: "100%", height: "100%", position: "relative" },
+  remote: { width: "100%", height: "100%", objectFit: "cover" },
   cameraOffContainer: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)" },
   cameraOffAvatar: { width: "200px", height: "200px", borderRadius: "50%", background: "rgba(255,255,255,0.95)", color: "#ff6b35", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "100px", fontWeight: "800", boxShadow: "0 20px 60px rgba(0,0,0,0.3)", border: "8px solid rgba(255,255,255,0.3)" },
   cameraOffText: { marginTop: "30px", color: "#fff", fontSize: "32px", fontWeight: "700", textShadow: "0 4px 12px rgba(0,0,0,0.2)" },
