@@ -14,19 +14,16 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [audioOn, setAudioOn] = useState(true);
   const [videoOn, setVideoOn] = useState(true);
   const [remoteVideoOn, setRemoteVideoOn] = useState(true);
-
   const [showChat, setShowChat] = useState(false);
   const [unreadDot, setUnreadDot] = useState(false);
   const [callMsg, setCallMsg] = useState("");
   const [callMessages, setCallMessages] = useState([]);
   const [callDuration, setCallDuration] = useState(0);
   const [isInCall, setIsInCall] = useState(false);
+  const [callStatus, setCallStatus] = useState(incoming ? "connecting" : "calling");
 
-  // "ringing" = incoming, waiting for accept/decline
-  // "calling" = outgoing, waiting for other side to pick up
-  // "in-call"  = connected
-  const [callStatus, setCallStatus] = useState(incoming ? "ringing" : "calling");
-
+  // ✅ ringtone only for OUTGOING caller side (optional ringback)
+  // IncomingCall.jsx already handles ringtone for receiver
   const ringtoneRef = useRef(null);
   const callTimeoutRef = useRef(null);
 
@@ -53,10 +50,14 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     pc.current.onconnectionstatechange = () => {
       console.log("Connection state:", pc.current.connectionState);
       if (pc.current.connectionState === "connected") {
+        setCallStatus("in-call");
         const interval = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
         pc.current._timer = interval;
       }
-      if (pc.current.connectionState === "disconnected" || pc.current.connectionState === "failed") {
+      if (
+        pc.current.connectionState === "disconnected" ||
+        pc.current.connectionState === "failed"
+      ) {
         cleanup();
       }
     };
@@ -99,6 +100,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     streamRef.current.getTracks().forEach((t) => pc.current.addTrack(t, streamRef.current));
   };
 
+  /* ========== OUTGOING CALL ========== */
   const startCall = async () => {
     if (isInCall) return;
     setIsInCall(true);
@@ -109,14 +111,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     socket.emit("call-user", { to: user, offer: off });
   };
 
-  const acceptCall = async () => {
-    if (isInCall) {
-      socket.emit("user-busy", { to: user });
-      return;
-    }
-    stopRingtone();
-    // ✅ Switch screen BEFORE async work — instant UI update, no double screen
-    setCallStatus("in-call");
+  /* ========== INCOMING: accept is called from PARENT before mounting this component ========== */
+  // ✅ IncomingCall.jsx handles the ringing UI + accept/decline buttons
+  // When user taps Accept in IncomingCall → parent mounts CallOverlay with incoming=true
+  // So here we just immediately connect
+  const connectIncoming = async () => {
+    if (isInCall) return;
     setIsInCall(true);
     createPeer();
     await startMedia();
@@ -124,12 +124,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     const ans = await pc.current.createAnswer();
     await pc.current.setLocalDescription(ans);
     socket.emit("answer-call", { to: user, answer: ans });
-  };
-
-  const declineCall = () => {
-    stopRingtone();
-    socket.emit("call-ended", { to: user });
-    cleanup();
   };
 
   /* ========== SOCKET ========== */
@@ -183,7 +177,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     };
   }, [showChat]);
 
-  // Outgoing — NO ringtone
+  // ✅ Outgoing call init
   useEffect(() => {
     if (incoming) return;
     startCall();
@@ -197,11 +191,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     return () => clearTimeout(callTimeoutRef.current);
   }, []);
 
-  // Incoming — play ringtone only, wait for button press
+  // ✅ Incoming call — directly connect, NO ringing screen here
+  // IncomingCall.jsx already showed the ringing UI, user already pressed Accept
   useEffect(() => {
     if (!incoming) return;
-    ringtoneRef.current?.play().catch(() => {});
-    return () => stopRingtone();
+    connectIncoming();
   }, []);
 
   /* ========== CONTROLS ========== */
@@ -234,7 +228,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     cleanup();
   };
 
-  /* ========== CALL CHAT ========== */
   const sendCallMessage = () => {
     if (!callMsg.trim()) return;
     socket.emit("call_message", { to: user, from: me, message: callMsg, time: Date.now() });
@@ -254,20 +247,15 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  /* ========================================================
-     ✅ SINGLE RETURN — callStatus decides which screen shows
-     NO double screen possible
-  ======================================================== */
+  /* ========== RENDER — only call UI, NO ringing screen ========== */
   return (
     <>
-      {/* ✅ ONE audio tag for entire component lifetime */}
       <audio ref={ringtoneRef} src={ringtone} loop />
 
       <style>{`
         @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-        @keyframes ringPulse { 0% { transform: scale(1); opacity: 0.6; } 100% { transform: scale(1.8); opacity: 0; } }
         .chat-sidebar { animation: slideInRight 0.3s ease-out; }
         .control-button { transition: all 0.2s ease; }
         .control-button:hover { transform: scale(1.1); }
@@ -283,232 +271,162 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       `}</style>
 
       <div style={styles.overlay}>
+        <div
+          style={{
+            flex: showChat ? "0 0 calc(100% - 380px)" : "1",
+            transition: "all 0.25s ease",
+            position: "relative",
+            minWidth: 0,
+          }}
+        >
+          {/* Remote Video or Avatar */}
+          <div style={styles.remoteContainer}>
+            {remoteVideoOn ? (
+              <video ref={remoteVideo} autoPlay playsInline muted={false} style={styles.remote} />
+            ) : (
+              <div style={styles.cameraOffContainer}>
+                <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
+                  {user?.charAt(0).toUpperCase()}
+                </div>
+                <p style={styles.cameraOffText}>{user}</p>
+                <p style={styles.cameraOffSubtext}>Camera is off</p>
+              </div>
+            )}
+          </div>
 
-        {/* ===== SCREEN 1: RINGING — incoming call waiting ===== */}
-        {callStatus === "ringing" && (
-          <div style={styles.ringingScreen}>
-            <div style={styles.ringingAvatarWrapper}>
-              <div style={styles.ringingRing1} />
-              <div style={styles.ringingRing2} />
-              <div style={styles.ringingAvatar}>{user?.charAt(0).toUpperCase()}</div>
+          {/* Local Video */}
+          <div className="local-video-container" style={styles.localContainer}>
+            {videoOn ? (
+              <video ref={localVideo} autoPlay muted playsInline style={styles.local} />
+            ) : (
+              <div style={styles.localCameraOff}>
+                <div style={styles.localCameraOffAvatar}>{me?.charAt(0).toUpperCase()}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Top Bar */}
+          <div style={styles.topBar}>
+            <div style={styles.topBarLeft}>
+              <div style={styles.userAvatar}>{user?.charAt(0).toUpperCase()}</div>
+              <div style={styles.userInfo}>
+                <div style={styles.userName}>{user}</div>
+                <div style={styles.callStatus}>
+                  <span style={styles.statusDot}>●</span>
+                  <span>
+                    {callStatus === "calling"
+                      ? "Calling..."
+                      : callStatus === "connecting"
+                      ? "Connecting..."
+                      : formatDuration(callDuration)}
+                  </span>
+                </div>
+              </div>
             </div>
-            <p style={styles.ringingName}>{user}</p>
-            <p style={styles.ringingSubtext}>Incoming Video Call...</p>
-            <div style={styles.ringingButtons}>
-              <div style={styles.ringingBtnGroup}>
-                <button
-                  onClick={declineCall}
-                  style={{ ...styles.ringingBtn, background: "linear-gradient(135deg, #ef4444, #dc2626)" }}
-                >
-                  <span style={styles.ringingBtnIcon}>📵</span>
-                </button>
-                <span style={styles.ringingBtnLabel}>Decline</span>
-              </div>
-              <div style={styles.ringingBtnGroup}>
-                <button
-                  onClick={acceptCall}
-                  style={{ ...styles.ringingBtn, background: "linear-gradient(135deg, #22c55e, #16a34a)" }}
-                >
-                  <span style={styles.ringingBtnIcon}>📞</span>
-                </button>
-                <span style={styles.ringingBtnLabel}>Accept</span>
-              </div>
+            <div style={styles.brandTag}>
+              <span style={styles.brandIcon}>💬</span>
+              <span style={styles.brandText}>NAPCHAT</span>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="controls-container" style={styles.controls}>
+            <button
+              onClick={toggleAudio}
+              className="control-button"
+              style={{ ...styles.controlButton, background: audioOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: audioOn ? "#333" : "#fff" }}
+            >
+              <span style={styles.controlIcon}>{audioOn ? "🎤" : "🔇"}</span>
+              <span style={styles.controlText}>{audioOn ? "Mute" : "Unmute"}</span>
+            </button>
+
+            <button
+              onClick={toggleVideo}
+              className="control-button"
+              style={{ ...styles.controlButton, background: videoOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: videoOn ? "#333" : "#fff" }}
+            >
+              <span style={styles.controlIcon}>📷</span>
+              <span style={styles.controlText}>Camera</span>
+            </button>
+
+            <button
+              onClick={() => { setShowChat(!showChat); setUnreadDot(false); }}
+              className="control-button"
+              style={{ ...styles.controlButton, background: "rgba(255,255,255,0.95)", color: "#333", position: "relative" }}
+            >
+              <span style={styles.controlIcon}>💬</span>
+              <span style={styles.controlText}>Chat</span>
+              {unreadDot && <span className="unread-dot" style={styles.unreadBadge} />}
+            </button>
+
+            <button
+              onClick={endCall}
+              className="control-button"
+              style={{ ...styles.controlButton, background: "linear-gradient(135deg,#ef4444,#dc2626)", color: "#fff", minWidth: "120px" }}
+            >
+              <span style={styles.controlIcon}>📞</span>
+              <span style={styles.controlText}>End Call</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Chat Sidebar */}
+        {showChat && (
+          <div className="chat-sidebar" style={styles.chatSidebar}>
+            <div style={styles.chatHeader}>
+              <h3 style={styles.chatTitle}>In-Call Chat</h3>
+              <button onClick={() => setShowChat(false)} style={styles.closeChatButton}>✕</button>
+            </div>
+            <div style={styles.chatList}>
+              {callMessages.length === 0 ? (
+                <div style={styles.emptyChatState}>
+                  <span style={styles.emptyChatIcon}>💬</span>
+                  <p style={styles.emptyChatText}>No messages yet</p>
+                </div>
+              ) : (
+                callMessages.map((m, i) => (
+                  <div key={i} style={{ ...styles.chatMessage, alignSelf: m.from === me ? "flex-end" : "flex-start" }}>
+                    <div style={{ ...styles.messageBubble, background: m.from === me ? "linear-gradient(135deg,#ff6b35,#ff8c42)" : "#f5f5f5", color: m.from === me ? "#fff" : "#333" }}>
+                      <div style={styles.messageFrom}>{m.from === me ? "You" : m.from}</div>
+                      {m.file ? (
+                        <a href={m.file} download={m.fileName} style={{ ...styles.fileLink, color: m.from === me ? "#fff" : "#ff6b35" }}>
+                          <span style={styles.fileIcon}>📎</span>
+                          <span>{m.fileName}</span>
+                        </a>
+                      ) : (
+                        <div style={styles.messageText}>{m.message}</div>
+                      )}
+                      <div style={styles.messageTime}>
+                        {new Date(m.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={styles.chatInputBar}>
+              <label style={styles.attachButton}>
+                <input type="file" hidden onChange={(e) => sendCallFile(e.target.files[0])} />
+                📎
+              </label>
+              <input
+                value={callMsg}
+                onChange={(e) => setCallMsg(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && sendCallMessage()}
+                placeholder="Send a message..."
+                style={styles.chatInput}
+              />
+              <button onClick={sendCallMessage} style={styles.sendBtn}>➤</button>
             </div>
           </div>
         )}
-
-        {/* ===== SCREEN 2: CALL UI — "calling" or "in-call" ===== */}
-        {callStatus !== "ringing" && (
-          <>
-            <div
-              style={{
-                flex: showChat ? "0 0 calc(100% - 380px)" : "1",
-                transition: "all 0.25s ease",
-                position: "relative",
-                minWidth: 0,
-              }}
-            >
-              {/* Remote Video or Avatar */}
-              <div style={styles.remoteContainer}>
-                {remoteVideoOn ? (
-                  <video ref={remoteVideo} autoPlay playsInline muted={false} style={styles.remote} />
-                ) : (
-                  <div style={styles.cameraOffContainer}>
-                    <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
-                      {user?.charAt(0).toUpperCase()}
-                    </div>
-                    <p style={styles.cameraOffText}>{user}</p>
-                    <p style={styles.cameraOffSubtext}>Camera is off</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Local Video */}
-              <div className="local-video-container" style={styles.localContainer}>
-                {videoOn ? (
-                  <video ref={localVideo} autoPlay muted playsInline style={styles.local} />
-                ) : (
-                  <div style={styles.localCameraOff}>
-                    <div style={styles.localCameraOffAvatar}>{me?.charAt(0).toUpperCase()}</div>
-                  </div>
-                )}
-              </div>
-
-              {/* Top Bar */}
-              <div style={styles.topBar}>
-                <div style={styles.topBarLeft}>
-                  <div style={styles.userAvatar}>{user?.charAt(0).toUpperCase()}</div>
-                  <div style={styles.userInfo}>
-                    <div style={styles.userName}>{user}</div>
-                    <div style={styles.callStatus}>
-                      <span style={styles.statusDot}>●</span>
-                      <span>{callStatus === "calling" ? "Calling..." : formatDuration(callDuration)}</span>
-                    </div>
-                  </div>
-                </div>
-                <div style={styles.brandTag}>
-                  <span style={styles.brandIcon}>💬</span>
-                  <span style={styles.brandText}>NAPCHAT</span>
-                </div>
-              </div>
-
-              {/* Controls */}
-              <div className="controls-container" style={styles.controls}>
-                <button
-                  onClick={toggleAudio}
-                  className="control-button"
-                  style={{ ...styles.controlButton, background: audioOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: audioOn ? "#333" : "#fff" }}
-                >
-                  <span style={styles.controlIcon}>{audioOn ? "🎤" : "🔇"}</span>
-                  <span style={styles.controlText}>{audioOn ? "Mute" : "Unmute"}</span>
-                </button>
-
-                <button
-                  onClick={toggleVideo}
-                  className="control-button"
-                  style={{ ...styles.controlButton, background: videoOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: videoOn ? "#333" : "#fff" }}
-                >
-                  <span style={styles.controlIcon}>📷</span>
-                  <span style={styles.controlText}>Camera</span>
-                </button>
-
-                <button
-                  onClick={() => { setShowChat(!showChat); setUnreadDot(false); }}
-                  className="control-button"
-                  style={{ ...styles.controlButton, background: "rgba(255,255,255,0.95)", color: "#333", position: "relative" }}
-                >
-                  <span style={styles.controlIcon}>💬</span>
-                  <span style={styles.controlText}>Chat</span>
-                  {unreadDot && <span className="unread-dot" style={styles.unreadBadge} />}
-                </button>
-
-                <button
-                  onClick={endCall}
-                  className="control-button"
-                  style={{ ...styles.controlButton, background: "linear-gradient(135deg,#ef4444,#dc2626)", color: "#fff", minWidth: "120px" }}
-                >
-                  <span style={styles.controlIcon}>📞</span>
-                  <span style={styles.controlText}>End Call</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Chat Sidebar */}
-            {showChat && (
-              <div className="chat-sidebar" style={styles.chatSidebar}>
-                <div style={styles.chatHeader}>
-                  <h3 style={styles.chatTitle}>In-Call Chat</h3>
-                  <button onClick={() => setShowChat(false)} style={styles.closeChatButton}>✕</button>
-                </div>
-                <div style={styles.chatList}>
-                  {callMessages.length === 0 ? (
-                    <div style={styles.emptyChatState}>
-                      <span style={styles.emptyChatIcon}>💬</span>
-                      <p style={styles.emptyChatText}>No messages yet</p>
-                    </div>
-                  ) : (
-                    callMessages.map((m, i) => (
-                      <div key={i} style={{ ...styles.chatMessage, alignSelf: m.from === me ? "flex-end" : "flex-start" }}>
-                        <div style={{ ...styles.messageBubble, background: m.from === me ? "linear-gradient(135deg,#ff6b35,#ff8c42)" : "#f5f5f5", color: m.from === me ? "#fff" : "#333" }}>
-                          <div style={styles.messageFrom}>{m.from === me ? "You" : m.from}</div>
-                          {m.file ? (
-                            <a href={m.file} download={m.fileName} style={{ ...styles.fileLink, color: m.from === me ? "#fff" : "#ff6b35" }}>
-                              <span style={styles.fileIcon}>📎</span>
-                              <span>{m.fileName}</span>
-                            </a>
-                          ) : (
-                            <div style={styles.messageText}>{m.message}</div>
-                          )}
-                          <div style={styles.messageTime}>
-                            {new Date(m.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-                <div style={styles.chatInputBar}>
-                  <label style={styles.attachButton}>
-                    <input type="file" hidden onChange={(e) => sendCallFile(e.target.files[0])} />
-                    📎
-                  </label>
-                  <input
-                    value={callMsg}
-                    onChange={(e) => setCallMsg(e.target.value)}
-                    onKeyPress={(e) => e.key === "Enter" && sendCallMessage()}
-                    placeholder="Send a message..."
-                    style={styles.chatInput}
-                  />
-                  <button onClick={sendCallMessage} style={styles.sendBtn}>➤</button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
       </div>
     </>
   );
 }
 
 const styles = {
-  overlay: {
-    position: "fixed", inset: 0,
-    background: "linear-gradient(135deg, #fff5eb 0%, #ffe8d6 100%)",
-    zIndex: 9999, display: "flex",
-  },
-  /* ===== RINGING ===== */
-  ringingScreen: {
-    flex: 1, display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center",
-    background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)", gap: "8px",
-  },
-  ringingAvatarWrapper: {
-    position: "relative", width: "140px", height: "140px",
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  ringingRing1: {
-    position: "absolute", width: "140px", height: "140px", borderRadius: "50%",
-    background: "rgba(255,255,255,0.3)", animation: "ringPulse 1.5s ease-out infinite",
-  },
-  ringingRing2: {
-    position: "absolute", width: "140px", height: "140px", borderRadius: "50%",
-    background: "rgba(255,255,255,0.2)", animation: "ringPulse 1.5s ease-out infinite 0.5s",
-  },
-  ringingAvatar: {
-    width: "100px", height: "100px", borderRadius: "50%",
-    background: "rgba(255,255,255,0.95)", color: "#ff6b35",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: "48px", fontWeight: "800", boxShadow: "0 8px 32px rgba(0,0,0,0.2)", zIndex: 1,
-  },
-  ringingName: { color: "#fff", fontSize: "28px", fontWeight: "700", margin: "16px 0 4px", textShadow: "0 2px 8px rgba(0,0,0,0.2)" },
-  ringingSubtext: { color: "rgba(255,255,255,0.85)", fontSize: "16px", fontWeight: "500", margin: 0 },
-  ringingButtons: { display: "flex", gap: "60px", marginTop: "40px" },
-  ringingBtnGroup: { display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" },
-  ringingBtn: { width: "70px", height: "70px", borderRadius: "50%", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 8px 24px rgba(0,0,0,0.25)", transition: "transform 0.2s ease" },
-  ringingBtnIcon: { fontSize: "30px" },
-  ringingBtnLabel: { color: "#fff", fontSize: "14px", fontWeight: "600" },
-  /* ===== MAIN CALL ===== */
+  overlay: { position: "fixed", inset: 0, background: "linear-gradient(135deg, #fff5eb 0%, #ffe8d6 100%)", zIndex: 9999, display: "flex" },
   remoteContainer: { width: "100%", height: "100%", position: "relative" },
   remote: { width: "100%", height: "100%", objectFit: "cover" },
   cameraOffContainer: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)" },
