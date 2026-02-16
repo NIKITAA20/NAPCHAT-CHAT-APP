@@ -89,22 +89,27 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   };
 
   const startMedia = async () => {
+    // Release any existing tracks first
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+
+    // Try video + audio first
     try {
-      // ✅ FIX: Release any existing tracks first to avoid "Device in use" error
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     } catch (err) {
-      console.error("Media error:", err);
-      if (err.name === "NotReadableError") {
-        alert("Camera/Mic is already in use by another app. Please close it and try again.");
-      } else {
-        alert("Camera/Mic permission denied");
+      console.warn("Video+Audio failed, trying audio only:", err.name);
+      // ✅ Camera in use or denied — fallback to audio only, don't block the call
+      try {
+        streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (audioErr) {
+        console.error("Audio also failed:", audioErr);
+        // ✅ Don't alert or return — let call proceed without media (rare case)
+        return;
       }
-      return;
     }
+
     if (localVideo.current) localVideo.current.srcObject = streamRef.current;
     streamRef.current.getTracks().forEach((t) => pc.current.addTrack(t, streamRef.current));
   };
