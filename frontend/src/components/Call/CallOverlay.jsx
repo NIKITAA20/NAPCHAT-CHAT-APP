@@ -69,15 +69,26 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     pc.current.ontrack = (event) => {
       const stream = event.streams?.[0];
       if (!stream) return;
+
+      console.log("📡 Remote stream received", stream.getTracks());
+
+      // ✅ Always set remoteVideoOn true when stream arrives
+      setRemoteVideoOn(true);
+
       if (remoteVideo.current) {
         remoteVideo.current.srcObject = stream;
         remoteVideo.current.play().catch((err) => console.log("Play error:", err));
       }
+
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
+        console.log("📹 Remote video track:", videoTrack.readyState);
         videoTrack.onended = () => setRemoteVideoOn(false);
         videoTrack.onmute = () => setRemoteVideoOn(false);
         videoTrack.onunmute = () => setRemoteVideoOn(true);
+      } else {
+        // No video track — show avatar
+        setRemoteVideoOn(false);
       }
     };
 
@@ -119,7 +130,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (isInCall) return;
     setIsInCall(true);
     createPeer();
+    // ✅ startMedia MUST happen before createOffer
+    // Tracks need to be added to peer BEFORE offer is created
+    // so that remote side gets video/audio in the SDP
     await startMedia();
+    if (!pc.current) return;
     const off = await pc.current.createOffer();
     await pc.current.setLocalDescription(off);
     socket.emit("call-user", { to: user, offer: off });
