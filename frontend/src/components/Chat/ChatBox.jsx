@@ -113,7 +113,7 @@ export default function ChatBox({ user, onCall, onBack }) {
     const formData = new FormData();
     formData.append("file", selectedFile);
 
-    const res = await API.post("/chat/upload", formData, {
+    const res = await API.post("/media/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
     const data = res.data;
