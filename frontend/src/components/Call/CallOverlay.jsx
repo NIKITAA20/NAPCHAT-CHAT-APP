@@ -14,7 +14,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [audioOn, setAudioOn] = useState(true);
   const [videoOn, setVideoOn] = useState(true);
   const [remoteVideoOn, setRemoteVideoOn] = useState(true);
-  const [remoteStream, setRemoteStream] = useState(null); // ✅ store stream in state
+  const [remoteStream, setRemoteStream] = useState(null);
   const [showChat, setShowChat] = useState(false);
   const [unreadDot, setUnreadDot] = useState(false);
   const [callMsg, setCallMsg] = useState("");
@@ -23,8 +23,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [isInCall, setIsInCall] = useState(false);
   const [callStatus, setCallStatus] = useState(incoming ? "connecting" : "calling");
 
-  // ✅ ringtone only for OUTGOING caller side (optional ringback)
-  // IncomingCall.jsx already handles ringtone for receiver
   const ringtoneRef = useRef(null);
   const callTimeoutRef = useRef(null);
 
@@ -40,36 +38,50 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const createPeer = () => {
     if (pc.current) return;
 
-    pc.current = new RTCPeerConnection({
-      iceServers: [
-        // Multiple STUN servers for better connectivity
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-        { urls: "stun:stun3.l.google.com:19302" },
-        { urls: "stun:stun4.l.google.com:19302" },
-        // ✅ Metered.ca TURN — replace with YOUR actual credentials from https://www.metered.ca/tools/openrelay/
+    // ✅ Get credentials with fallback
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL;
+
+    // ✅ Build ICE servers array - only include TURN if credentials exist
+    const iceServers = [
+      // Multiple STUN servers for better connectivity
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun4.l.google.com:19302" },
+    ];
+
+    // ✅ Only add TURN servers if both username and credential are defined
+    if (turnUsername && turnCredential) {
+      iceServers.push(
         {
           urls: "turn:a.relay.metered.ca:80",
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+          username: turnUsername,
+          credential: turnCredential,
         },
         {
           urls: "turn:a.relay.metered.ca:80?transport=tcp",
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+          username: turnUsername,
+          credential: turnCredential,
         },
         {
           urls: "turn:a.relay.metered.ca:443",
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+          username: turnUsername,
+          credential: turnCredential,
         },
         {
           urls: "turn:a.relay.metered.ca:443?transport=tcp",
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
-        },
-      ],
+          username: turnUsername,
+          credential: turnCredential,
+        }
+      );
+    } else {
+      console.warn("⚠️ TURN credentials not found - using STUN only. Add VITE_TURN_USERNAME and VITE_TURN_CREDENTIAL to .env file");
+    }
+
+    pc.current = new RTCPeerConnection({
+      iceServers,
       iceCandidatePoolSize: 10,
     });
 
@@ -98,7 +110,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       console.log("📡 Remote stream received", stream.getTracks());
 
-      // ✅ Store stream in state — React will re-render and attach via useEffect
       setRemoteStream(stream);
 
       const videoTrack = stream.getVideoTracks()[0];
@@ -132,12 +143,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     } catch (err) {
       console.warn("Video+Audio failed, trying audio only:", err.name);
-      // ✅ Camera in use or denied — fallback to audio only, don't block the call
       try {
         streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       } catch (audioErr) {
         console.error("Audio also failed:", audioErr);
-        // ✅ Don't alert or return — let call proceed without media (rare case)
         return;
       }
     }
@@ -151,9 +160,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (isInCall) return;
     setIsInCall(true);
     createPeer();
-    // ✅ startMedia MUST happen before createOffer
-    // Tracks need to be added to peer BEFORE offer is created
-    // so that remote side gets video/audio in the SDP
     await startMedia();
     if (!pc.current) return;
     const off = await pc.current.createOffer();
@@ -161,11 +167,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     socket.emit("call-user", { to: user, offer: off });
   };
 
-  // ✅ Guard ref — prevents connectIncoming from running twice (React strict mode / double mount)
   const connectingRef = useRef(false);
 
   const connectIncoming = async () => {
-    // Already connecting or connected — bail out immediately
     if (connectingRef.current || isInCall) return;
     connectingRef.current = true;
 
@@ -173,7 +177,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     createPeer();
     await startMedia();
 
-    // ✅ Safety — only proceed if peer is in "stable" signaling state
     if (!pc.current || pc.current.signalingState !== "stable") {
       console.warn("⚠️ Peer not stable, aborting setRemoteDescription");
       connectingRef.current = false;
@@ -237,7 +240,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     };
   }, [showChat]);
 
-  // ✅ Outgoing call init
   useEffect(() => {
     if (incoming) return;
     startCall();
@@ -251,16 +253,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     return () => clearTimeout(callTimeoutRef.current);
   }, []);
 
-  // ✅ Incoming call — directly connect, NO ringing screen here
-  // IncomingCall.jsx already showed the ringing UI, user already pressed Accept
   useEffect(() => {
     if (!incoming) return;
     connectIncoming();
   }, []);
 
-  // ✅ KEY FIX: Attach remoteStream to video element AFTER React renders it
-  // ontrack fires before video element exists in DOM — so we store stream in state
-  // and attach it here, once the video element ref is available
   useEffect(() => {
     if (!remoteStream || !remoteVideo.current) return;
     if (remoteVideo.current.srcObject !== remoteStream) {
@@ -319,7 +316,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  /* ========== RENDER — only call UI, NO ringing screen ========== */
+  /* ========== RENDER ========== */
   return (
     <>
       <audio ref={ringtoneRef} src={ringtone} loop />
