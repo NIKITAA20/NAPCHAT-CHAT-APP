@@ -147,26 +147,41 @@ socket.on("private_message", async (data) => {
     });
 
     /* ================= MISSED CALL ================= */
-    socket.on("missed-call", async ({ to }) => {
-      const receiverSocket = await redis.hGet("users:online", to);
+   socket.on("call-missed", async ({ to }) => {
+  try {
+    const receiverSocket = await redis.hGet("users:online", to);
 
-      const systemMsg = {
-        system: true,
-        text: "📵 Missed call",
-        from: socket.username,
-        to,
-        time: Date.now(),
-      };
+    // ✅ Sorted chat key (important)
+    const chatKey = `chat:${[socket.username, to].sort().join(":")}`;
 
-      await redis.rPush(`chat:${socket.username}:${to}`, JSON.stringify(systemMsg));
-      await redis.rPush(`chat:${to}:${socket.username}`, JSON.stringify(systemMsg));
+    const systemMsg = {
+      system: true,
+      type: "missed-call",
+      text: "📵 Missed call",
+      from: socket.username,
+      to,
+      time: Date.now(),
+    };
 
-      socket.emit("receive_message", systemMsg);
+    // Save message
+    await redis.rPush(chatKey, JSON.stringify(systemMsg));
 
-      if (receiverSocket) {
-        io.to(receiverSocket).emit("receive_message", systemMsg);
-      }
-    });
+    // Increase unread count
+    await redis.hIncrBy(`unread:${to}`, socket.username, 1);
+
+    // Send to caller
+    socket.emit("receive_message", systemMsg);
+
+    // Send to receiver if online
+    if (receiverSocket) {
+      io.to(receiverSocket).emit("receive_message", systemMsg);
+    }
+
+  } catch (err) {
+    console.error("Missed call error:", err);
+  }
+});
+
 
     /* ================= CALL-ONLY CHAT (TEMP) ================= */
     socket.on("call_message", async ({ to, message, file, fileName }) => {
@@ -185,6 +200,25 @@ socket.on("private_message", async (data) => {
 
       socket.emit("call_message", payload);
     });
+
+
+
+    const usersInCall = new Set();
+
+socket.on("call-user", ({ to, offer }) => {
+  if (usersInCall.has(to)) {
+    socket.emit("user-busy");
+    return;
+  }
+
+  usersInCall.add(socket.id);
+  io.to(to).emit("incoming-call", { from: socket.id, offer });
+});
+
+socket.on("end-call", () => {
+  usersInCall.delete(socket.id);
+});
+
 
     /* ================= DISCONNECT ================= */
     socket.on("disconnect", async () => {

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import socket from "../../services/socket";
+import ringtone from "../../assets/ringtone.mp3";
+
 
 export default function CallOverlay({ user, incoming, offer, onClose }) {
   const me = localStorage.getItem("username");
@@ -19,45 +21,111 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [callMsg, setCallMsg] = useState("");
   const [callMessages, setCallMessages] = useState([]);
   const [callDuration, setCallDuration] = useState(0);
+  const [isInCall, setIsInCall] = useState(false);
+  const ringtoneRef = useRef(null);
+  const callTimeoutRef = useRef(null);
+
+
 
   /* ========== PEER ========== */
-  const createPeer = () => {
-    pc.current = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
+const createPeer = () => {
+ 
+  if (pc.current) {
+    console.log("⚠️ Peer already exists");
+    return;
+  }
 
-    pc.current.ontrack = (e) => {
-      if (remoteVideo.current) {
-  remoteVideo.current.srcObject = e.streams[0];
-}
+  pc.current = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    ],
+  });
 
-      
-      // Monitor remote video track
-      const videoTrack = e.streams[0].getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.onended = () => setRemoteVideoOn(false);
-        videoTrack.onmute = () => setRemoteVideoOn(false);
-        videoTrack.onunmute = () => setRemoteVideoOn(true);
-      }
-    };
+  /* ================= CONNECTION STATE ================= */
 
-    pc.current.onicecandidate = (e) => {
-      if (e.candidate) {
-        socket.emit("ice-candidate", { to: user, candidate: e.candidate });
-      }
-    };
+  pc.current.onconnectionstatechange = () => {
+  console.log("Connection state:", pc.current.connectionState);
 
-    pendingCandidates.current.forEach((c) =>
-      pc.current.addIceCandidate(c)
-    );
-    pendingCandidates.current = [];
+  if (pc.current.connectionState === "connected") {
+    const interval = setInterval(() => {
+      setCallDuration((prev) => prev + 1);
+    }, 1000);
+
+    pc.current._timer = interval; // attach to peer
+  }
+
+  if (
+    pc.current.connectionState === "disconnected" ||
+    pc.current.connectionState === "failed"
+  ) {
+    cleanup();
+  }
+};
+
+  pc.current.oniceconnectionstatechange = () => {
+    console.log("ICE state:", pc.current.iceConnectionState);
   };
 
-  const startMedia = async () => {
-    streamRef.current = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: true,
-    });
+  /* ================= REMOTE TRACK ================= */
+
+  pc.current.ontrack = (event) => {
+    const stream = event.streams?.[0];
+    if (!stream) return;
+
+    console.log("📡 Remote stream received");
+
+    if (remoteVideo.current) {
+      remoteVideo.current.srcObject = stream;
+
+      remoteVideo.current
+        .play()
+        .catch((err) => console.log("Play error:", err));
+    }
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.onended = () => setRemoteVideoOn(false);
+      videoTrack.onmute = () => setRemoteVideoOn(false);
+      videoTrack.onunmute = () => setRemoteVideoOn(true);
+    }
+  };
+
+  /* ================= ICE ================= */
+
+  pc.current.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit("ice-candidate", {
+        to: user,
+        candidate: event.candidate,
+      });
+    }
+  };
+};
+
+
+
+const startMedia = async () => {
+try {
+  streamRef.current = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: true,
+  });
+} catch (err) {
+  console.error("Media error:", err);
+  alert("Camera/Mic permission denied");
+  return;
+}
+
     if (localVideo.current) {
   localVideo.current.srcObject = streamRef.current;
 }
@@ -67,39 +135,41 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     );
   };
 
-  const startCall = async () => {
-    createPeer();
-    await startMedia();
-    const off = await pc.current.createOffer();
-    await pc.current.setLocalDescription(off);
-    socket.emit("call-user", { to: user, offer: off });
-  };
+const startCall = async () => {
+  if (isInCall) return;
 
-  const acceptCall = async () => {
-    createPeer();
-    await startMedia();
-    await pc.current.setRemoteDescription(offer);
-    for (const c of pendingCandidates.current) {
-  await pc.current.addIceCandidate(c);
-}
- pendingCandidates.current = [];
+  setIsInCall(true);
 
-    const ans = await pc.current.createAnswer();
-    await pc.current.setLocalDescription(ans);
-    socket.emit("answer-call", { to: user, answer: ans });
-  };
+  createPeer();
+  await startMedia();
+
+  const off = await pc.current.createOffer();
+  await pc.current.setLocalDescription(off);
+
+  socket.emit("call-user", { to: user, offer: off });
+};
+
+const acceptCall = async () => {
+  if (isInCall) {
+    socket.emit("user-busy", { to: user });
+    return;
+  }
+
+  setIsInCall(true);
+
+  createPeer();
+  await startMedia();
+  await pc.current.setRemoteDescription(offer);
+
+  const ans = await pc.current.createAnswer();
+  await pc.current.setLocalDescription(ans);
+
+  socket.emit("answer-call", { to: user, answer: ans });
+};
+
 
   /* ========== SOCKET ========== */
   useEffect(() => {
-    socket.on("call-accepted", async ({ answer }) => {
-      await pc.current.setRemoteDescription(answer);
-
-    for (const c of pendingCandidates.current) {
-      await pc.current.addIceCandidate(c);
-    }
-    pendingCandidates.current = [];
-    });
-
 
     socket.on("ice-candidate", async ({ candidate }) => {
       if (!pc.current || !pc.current.remoteDescription) {
@@ -114,6 +184,31 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       }
     });
 
+  socket.on("call-accepted", async ({ answer }) => {
+  if (!pc.current) return;
+
+  clearTimeout(callTimeoutRef.current);
+  ringtoneRef.current?.pause();
+
+  await pc.current.setRemoteDescription(answer);
+
+  for (const c of pendingCandidates.current) {
+    try {
+      await pc.current.addIceCandidate(c);
+    } catch (err) {
+      console.log("ICE add error:", err);
+    }
+  }
+
+  pendingCandidates.current = [];
+});
+
+
+
+  socket.on("user-busy", () => {
+  alert("User is already in another call.");
+  cleanup();
+});
 
     socket.on("call-ended", cleanup);
 
@@ -124,23 +219,50 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       }
     });
 
+  socket.on("call-missed", () => {
+  alert("Call was not answered.");
+  cleanup();
+});
+
+
     return () => {
       socket.off("call-accepted");
       socket.off("ice-candidate");
       socket.off("call-ended");
       socket.off("call_message");
+      socket.off("call-missed");
     };
   }, [showChat]);
 
-  useEffect(() => {
-    incoming ? acceptCall() : startCall();
-    
-    const interval = setInterval(() => {
-      setCallDuration((prev) => prev + 1);
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, []);
+useEffect(() => {
+  if (incoming) return;
+
+  startCall();
+
+  callTimeoutRef.current = setTimeout(() => {
+    if (!pc.current || pc.current.connectionState !== "connected") {
+      socket.emit("call-missed", { to: user });
+      alert("Call not answered ❌");
+      cleanup();
+    }
+  }, 20000);
+
+  return () => clearTimeout(callTimeoutRef.current);
+}, []);
+
+useEffect(() => {
+  if (!incoming) return;
+
+  ringtoneRef.current?.play().catch(() => {});
+
+  acceptCall();
+
+  return () => {
+    ringtoneRef.current?.pause();
+  };
+}, []);
+
+
 
   /* ========== CONTROLS ========== */
   const toggleAudio = () => {
@@ -158,11 +280,29 @@ if (!t) return;
     setVideoOn(t.enabled);
   };
 
-  const cleanup = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    pc.current?.close();
-    onClose();
-  };
+const cleanup = () => {
+  setIsInCall(false);
+
+  clearTimeout(callTimeoutRef.current);   // 🔥 important
+  ringtoneRef.current?.pause();           // 🔥 important
+  ringtoneRef.current.currentTime = 0;    // reset ringtone
+
+  streamRef.current?.getTracks().forEach((t) => t.stop());
+
+  if (pc.current?._timer) {
+  clearInterval(pc.current._timer);
+}
+
+if (pc.current) {
+  pc.current.close();
+  pc.current = null;
+
+}
+
+
+  onClose();
+};
+
 
   const endCall = () => {
     socket.emit("end-call", { to: user });
@@ -272,7 +412,14 @@ if (!t) return;
           {/* Remote Video or Avatar */}
           <div style={styles.remoteContainer}>
             {remoteVideoOn ? (
-              <video ref={remoteVideo} autoPlay style={styles.remote} />
+          <video
+          ref={remoteVideo}
+          autoPlay
+          playsInline
+          muted={false}
+          style={styles.remote}
+        />
+
             ) : (
               <div style={styles.cameraOffContainer}>
                 <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
@@ -287,7 +434,7 @@ if (!t) return;
           {/* Local Video or Avatar */}
           <div className="local-video-container" style={styles.localContainer}>
             {videoOn ? (
-              <video ref={localVideo} autoPlay muted style={styles.local} />
+              <video ref={localVideo} autoPlay muted playsInline style={styles.local} />
             ) : (
               <div style={styles.localCameraOff}>
                 <div style={styles.localCameraOffAvatar}>
@@ -477,6 +624,7 @@ if (!t) return;
           </div>
         )}
       </div>
+       <audio ref={ringtoneRef} src={ringtone} loop />
     </>
   );
 }
