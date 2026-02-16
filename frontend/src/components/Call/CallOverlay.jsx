@@ -72,22 +72,21 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       console.log("📡 Remote stream received", stream.getTracks());
 
-      // ✅ Always set remoteVideoOn true when stream arrives
-      setRemoteVideoOn(true);
-
-      if (remoteVideo.current) {
+      // ✅ Only set srcObject once — avoid interrupting play()
+      if (remoteVideo.current && remoteVideo.current.srcObject !== stream) {
         remoteVideo.current.srcObject = stream;
-        remoteVideo.current.play().catch((err) => console.log("Play error:", err));
+        // ✅ Don't call .play() manually — let autoPlay handle it
+        // Calling .play() after srcObject causes AbortError when ontrack fires twice
       }
 
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         console.log("📹 Remote video track:", videoTrack.readyState);
+        setRemoteVideoOn(true);
         videoTrack.onended = () => setRemoteVideoOn(false);
         videoTrack.onmute = () => setRemoteVideoOn(false);
         videoTrack.onunmute = () => setRemoteVideoOn(true);
       } else {
-        // No video track — show avatar
         setRemoteVideoOn(false);
       }
     };
@@ -321,7 +320,16 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
           {/* Remote Video or Avatar */}
           <div style={styles.remoteContainer}>
             {remoteVideoOn ? (
-              <video ref={remoteVideo} autoPlay playsInline muted={false} style={styles.remote} />
+              <video
+                ref={(el) => {
+                  remoteVideo.current = el;
+                  // ✅ Unmute via DOM — React's muted={false} is ignored by browser
+                  if (el) el.muted = false;
+                }}
+                autoPlay
+                playsInline
+                style={styles.remote}
+              />
             ) : (
               <div style={styles.cameraOffContainer}>
                 <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
