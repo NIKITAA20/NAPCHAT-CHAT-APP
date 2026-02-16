@@ -14,6 +14,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [audioOn, setAudioOn] = useState(true);
   const [videoOn, setVideoOn] = useState(true);
   const [remoteVideoOn, setRemoteVideoOn] = useState(true);
+  const [remoteStream, setRemoteStream] = useState(null); // ✅ store stream in state
   const [showChat, setShowChat] = useState(false);
   const [unreadDot, setUnreadDot] = useState(false);
   const [callMsg, setCallMsg] = useState("");
@@ -72,12 +73,8 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       console.log("📡 Remote stream received", stream.getTracks());
 
-      // ✅ Only set srcObject once — avoid interrupting play()
-      if (remoteVideo.current && remoteVideo.current.srcObject !== stream) {
-        remoteVideo.current.srcObject = stream;
-        // ✅ Don't call .play() manually — let autoPlay handle it
-        // Calling .play() after srcObject causes AbortError when ontrack fires twice
-      }
+      // ✅ Store stream in state — React will re-render and attach via useEffect
+      setRemoteStream(stream);
 
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
@@ -236,6 +233,18 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     connectIncoming();
   }, []);
 
+  // ✅ KEY FIX: Attach remoteStream to video element AFTER React renders it
+  // ontrack fires before video element exists in DOM — so we store stream in state
+  // and attach it here, once the video element ref is available
+  useEffect(() => {
+    if (!remoteStream || !remoteVideo.current) return;
+    if (remoteVideo.current.srcObject !== remoteStream) {
+      remoteVideo.current.srcObject = remoteStream;
+      remoteVideo.current.muted = false;
+      console.log("✅ Remote stream attached to video element");
+    }
+  }, [remoteStream]);
+
   /* ========== CONTROLS ========== */
   const toggleAudio = () => {
     const t = streamRef.current?.getAudioTracks?.()[0];
@@ -321,11 +330,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
           <div style={styles.remoteContainer}>
             {remoteVideoOn ? (
               <video
-                ref={(el) => {
-                  remoteVideo.current = el;
-                  // ✅ Unmute via DOM — React's muted={false} is ignored by browser
-                  if (el) el.muted = false;
-                }}
+                ref={remoteVideo}
                 autoPlay
                 playsInline
                 style={styles.remote}
