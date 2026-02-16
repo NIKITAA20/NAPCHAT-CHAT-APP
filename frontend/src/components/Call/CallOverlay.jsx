@@ -485,8 +485,12 @@ useEffect(() => {
 
 const styles = {
   overlay: { position: "fixed", inset: 0, background: "linear-gradient(135deg, #fff5eb 0%, #ffe8d6 100%)", zIndex: 9999, display: "flex" },
-  remoteContainer: { width: "100%", height: "100%", position: "relative" },
-  remote: { width: "100%", height: "100%", objectFit: "cover" },
+ remoteContainer: { 
+  position: "absolute",
+  inset: 0,
+  background: "black"
+},
+  remote: { width: "100%", height: "100%", objectFit: "cover", background: "black" },
   cameraOffContainer: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)" },
   cameraOffAvatar: { width: "200px", height: "200px", borderRadius: "50%", background: "rgba(255,255,255,0.95)", color: "#ff6b35", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "100px", fontWeight: "800", boxShadow: "0 20px 60px rgba(0,0,0,0.3)", border: "8px solid rgba(255,255,255,0.3)" },
   cameraOffText: { marginTop: "30px", color: "#fff", fontSize: "32px", fontWeight: "700", textShadow: "0 4px 12px rgba(0,0,0,0.2)" },
