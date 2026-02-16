@@ -90,10 +90,19 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   const startMedia = async () => {
     try {
+      // ✅ FIX: Release any existing tracks first to avoid "Device in use" error
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     } catch (err) {
       console.error("Media error:", err);
-      alert("Camera/Mic permission denied");
+      if (err.name === "NotReadableError") {
+        alert("Camera/Mic is already in use by another app. Please close it and try again.");
+      } else {
+        alert("Camera/Mic permission denied");
+      }
       return;
     }
     if (localVideo.current) localVideo.current.srcObject = streamRef.current;
@@ -111,15 +120,25 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     socket.emit("call-user", { to: user, offer: off });
   };
 
-  /* ========== INCOMING: accept is called from PARENT before mounting this component ========== */
-  // ✅ IncomingCall.jsx handles the ringing UI + accept/decline buttons
-  // When user taps Accept in IncomingCall → parent mounts CallOverlay with incoming=true
-  // So here we just immediately connect
+  // ✅ Guard ref — prevents connectIncoming from running twice (React strict mode / double mount)
+  const connectingRef = useRef(false);
+
   const connectIncoming = async () => {
-    if (isInCall) return;
+    // Already connecting or connected — bail out immediately
+    if (connectingRef.current || isInCall) return;
+    connectingRef.current = true;
+
     setIsInCall(true);
     createPeer();
     await startMedia();
+
+    // ✅ Safety — only proceed if peer is in "stable" signaling state
+    if (!pc.current || pc.current.signalingState !== "stable") {
+      console.warn("⚠️ Peer not stable, aborting setRemoteDescription");
+      connectingRef.current = false;
+      return;
+    }
+
     await pc.current.setRemoteDescription(offer);
     const ans = await pc.current.createAnswer();
     await pc.current.setLocalDescription(ans);

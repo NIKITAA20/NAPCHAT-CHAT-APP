@@ -5,9 +5,14 @@ export default function IncomingCall({ from, onAccept, onReject }) {
   const ringtoneRef = useRef(null);
 
   useEffect(() => {
-    ringtoneRef.current = new Audio("/ringtone.mp3");
-    ringtoneRef.current.loop = true;
-    ringtoneRef.current.play().catch(() => {});
+    const audio = new Audio("/ringtone.mp3");
+    audio.loop = true;
+    ringtoneRef.current = audio;
+
+    // ✅ Wait for audio to be ready before playing — fixes AbortError
+    audio.addEventListener("canplaythrough", () => {
+      audio.play().catch(() => {});
+    }, { once: true });
 
     // ✅ If caller cancels while ringing, auto-dismiss
     socket.on("call-ended", handleReject);
