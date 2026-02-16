@@ -27,7 +27,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     });
 
     pc.current.ontrack = (e) => {
-      remoteVideo.current.srcObject = e.streams[0];
+      if (remoteVideo.current) {
+  remoteVideo.current.srcObject = e.streams[0];
+}
+
       
       // Monitor remote video track
       const videoTrack = e.streams[0].getVideoTracks()[0];
@@ -55,7 +58,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       audio: true,
       video: true,
     });
-    localVideo.current.srcObject = streamRef.current;
+    if (localVideo.current) {
+  localVideo.current.srcObject = streamRef.current;
+}
+
     streamRef.current.getTracks().forEach((t) =>
       pc.current.addTrack(t, streamRef.current)
     );
@@ -73,6 +79,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     createPeer();
     await startMedia();
     await pc.current.setRemoteDescription(offer);
+    for (const c of pendingCandidates.current) {
+  await pc.current.addIceCandidate(c);
+}
+ pendingCandidates.current = [];
+
     const ans = await pc.current.createAnswer();
     await pc.current.setLocalDescription(ans);
     socket.emit("answer-call", { to: user, answer: ans });
@@ -80,15 +91,29 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   /* ========== SOCKET ========== */
   useEffect(() => {
-    socket.on("call-accepted", ({ answer }) => {
-      pc.current?.setRemoteDescription(answer);
+    socket.on("call-accepted", async ({ answer }) => {
+      await pc.current.setRemoteDescription(answer);
+
+    for (const c of pendingCandidates.current) {
+      await pc.current.addIceCandidate(c);
+    }
+    pendingCandidates.current = [];
     });
 
-    socket.on("ice-candidate", ({ candidate }) => {
-      pc.current
-        ? pc.current.addIceCandidate(candidate)
-        : pendingCandidates.current.push(candidate);
+
+    socket.on("ice-candidate", async ({ candidate }) => {
+      if (!pc.current || !pc.current.remoteDescription) {
+        pendingCandidates.current.push(candidate);
+        return;
+      }
+
+      try {
+        await pc.current.addIceCandidate(candidate);
+      } catch (err) {
+        console.error("ICE error:", err);
+      }
     });
+
 
     socket.on("call-ended", cleanup);
 
@@ -119,13 +144,16 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   /* ========== CONTROLS ========== */
   const toggleAudio = () => {
-    const t = streamRef.current.getAudioTracks()[0];
+    const t = streamRef.current?.getAudioTracks?.()[0];
+if (!t) return;
+
     t.enabled = !t.enabled;
     setAudioOn(t.enabled);
   };
 
   const toggleVideo = () => {
-    const t = streamRef.current.getVideoTracks()[0];
+   const t = streamRef.current?.getVideoTracks?.()[0];
+if (!t) return;
     t.enabled = !t.enabled;
     setVideoOn(t.enabled);
   };
