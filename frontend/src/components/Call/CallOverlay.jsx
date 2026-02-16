@@ -48,20 +48,31 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       ],
     });
 
-    pc.current.onconnectionstatechange = () => {
-      console.log("Connection state:", pc.current.connectionState);
-      if (pc.current.connectionState === "connected") {
-        setCallStatus("in-call");
-        const interval = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
-        pc.current._timer = interval;
-      }
-      if (
-        pc.current.connectionState === "disconnected" ||
-        pc.current.connectionState === "failed"
-      ) {
-        cleanup();
-      }
-    };
+pc.current.oniceconnectionstatechange = () => {
+  console.log("ICE state:", pc.current.iceConnectionState);
+
+  if (
+    pc.current.iceConnectionState === "connected" ||
+    pc.current.iceConnectionState === "completed"
+  ) {
+    setCallStatus("in-call");
+
+    if (!pc.current._timer) {
+      const interval = setInterval(
+        () => setCallDuration((prev) => prev + 1),
+        1000
+      );
+      pc.current._timer = interval;
+    }
+  }
+
+  if (
+    pc.current.iceConnectionState === "disconnected" ||
+    pc.current.iceConnectionState === "failed"
+  ) {
+    cleanup();
+  }
+};
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("ICE state:", pc.current.iceConnectionState);
@@ -333,24 +344,35 @@ useEffect(() => {
           }}
         >
           {/* Remote Video or Avatar */}
-          <div style={styles.remoteContainer}>
-            {remoteVideoOn ? (
-              <video
-                ref={remoteVideo}
-                autoPlay
-                playsInline
-                style={styles.remote}
-              />
-            ) : (
-              <div style={styles.cameraOffContainer}>
-                <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
-                  {user?.charAt(0).toUpperCase()}
-                </div>
-                <p style={styles.cameraOffText}>{user}</p>
-                <p style={styles.cameraOffSubtext}>Camera is off</p>
-              </div>
-            )}
-          </div>
+         <div style={styles.remoteContainer}>
+
+  {/* ALWAYS keep video mounted */}
+  <video
+    ref={remoteVideo}
+    autoPlay
+    playsInline
+    style={{
+      ...styles.remote,
+      display: remoteVideoOn ? "block" : "none"
+    }}
+  />
+
+  {/* Show camera off UI separately */}
+  {!remoteVideoOn && (
+    <div style={styles.cameraOffContainer}>
+      <div
+        className="camera-off-avatar"
+        style={styles.cameraOffAvatar}
+      >
+        {user?.charAt(0).toUpperCase()}
+      </div>
+      <p style={styles.cameraOffText}>{user}</p>
+      <p style={styles.cameraOffSubtext}>Camera is off</p>
+    </div>
+  )}
+
+</div>
+
 
           {/* Local Video */}
           <div className="local-video-container" style={styles.localContainer}>
