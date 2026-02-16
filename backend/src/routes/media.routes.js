@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import path from "path";
 
 const router = express.Router();
 
@@ -14,8 +13,13 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 router.post("/upload", upload.single("file"), (req, res) => {
+  // ✅ FIX: Build URL from request — no env variable needed, never undefined
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol;
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  const baseUrl = `${protocol}://${host}`;
+
   res.json({
-    fileUrl: `${process.env.BASE_URL}/uploads/${req.file.filename}`,
+    fileUrl: `${baseUrl}/uploads/${req.file.filename}`,
     fileType: req.file.mimetype,
     originalName: req.file.originalname,
   });
