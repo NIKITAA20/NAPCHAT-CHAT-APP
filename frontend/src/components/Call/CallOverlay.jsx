@@ -22,150 +22,162 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [callMessages, setCallMessages] = useState([]);
   const [callDuration, setCallDuration] = useState(0);
   const [isInCall, setIsInCall] = useState(false);
+
+  // ✅ NEW: track if receiver has accepted or declined yet
+  const [callStatus, setCallStatus] = useState(incoming ? "ringing" : "calling");
+
   const ringtoneRef = useRef(null);
   const callTimeoutRef = useRef(null);
 
 
 
   /* ========== PEER ========== */
-const createPeer = () => {
- 
-  if (pc.current) {
-    console.log("⚠️ Peer already exists");
-    return;
-  }
-
-  pc.current = new RTCPeerConnection({
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      {
-        urls: "turn:openrelay.metered.ca:80",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ],
-  });
-
-  /* ================= CONNECTION STATE ================= */
-
-  pc.current.onconnectionstatechange = () => {
-  console.log("Connection state:", pc.current.connectionState);
-
-  if (pc.current.connectionState === "connected") {
-    const interval = setInterval(() => {
-      setCallDuration((prev) => prev + 1);
-    }, 1000);
-
-    pc.current._timer = interval; // attach to peer
-  }
-
-  if (
-    pc.current.connectionState === "disconnected" ||
-    pc.current.connectionState === "failed"
-  ) {
-    cleanup();
-  }
-};
-
-  pc.current.oniceconnectionstatechange = () => {
-    console.log("ICE state:", pc.current.iceConnectionState);
-  };
-
-  /* ================= REMOTE TRACK ================= */
-
-  pc.current.ontrack = (event) => {
-    const stream = event.streams?.[0];
-    if (!stream) return;
-
-    console.log("📡 Remote stream received");
-
-    if (remoteVideo.current) {
-      remoteVideo.current.srcObject = stream;
-
-      remoteVideo.current
-        .play()
-        .catch((err) => console.log("Play error:", err));
+  const createPeer = () => {
+    if (pc.current) {
+      console.log("⚠️ Peer already exists");
+      return;
     }
 
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.onended = () => setRemoteVideoOn(false);
-      videoTrack.onmute = () => setRemoteVideoOn(false);
-      videoTrack.onunmute = () => setRemoteVideoOn(true);
-    }
+    pc.current = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
+      ],
+    });
+
+    pc.current.onconnectionstatechange = () => {
+      console.log("Connection state:", pc.current.connectionState);
+
+      if (pc.current.connectionState === "connected") {
+        const interval = setInterval(() => {
+          setCallDuration((prev) => prev + 1);
+        }, 1000);
+        pc.current._timer = interval;
+      }
+
+      if (
+        pc.current.connectionState === "disconnected" ||
+        pc.current.connectionState === "failed"
+      ) {
+        cleanup();
+      }
+    };
+
+    pc.current.oniceconnectionstatechange = () => {
+      console.log("ICE state:", pc.current.iceConnectionState);
+    };
+
+    pc.current.ontrack = (event) => {
+      const stream = event.streams?.[0];
+      if (!stream) return;
+
+      console.log("📡 Remote stream received");
+
+      if (remoteVideo.current) {
+        remoteVideo.current.srcObject = stream;
+        remoteVideo.current.play().catch((err) => console.log("Play error:", err));
+      }
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => setRemoteVideoOn(false);
+        videoTrack.onmute = () => setRemoteVideoOn(false);
+        videoTrack.onunmute = () => setRemoteVideoOn(true);
+      }
+    };
+
+    pc.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit("ice-candidate", {
+          to: user,
+          candidate: event.candidate,
+        });
+      }
+    };
   };
 
-  /* ================= ICE ================= */
 
-  pc.current.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit("ice-candidate", {
-        to: user,
-        candidate: event.candidate,
+
+  const startMedia = async () => {
+    try {
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
       });
+    } catch (err) {
+      console.error("Media error:", err);
+      alert("Camera/Mic permission denied");
+      return;
     }
-  };
-};
-
-
-
-const startMedia = async () => {
-try {
-  streamRef.current = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: true,
-  });
-} catch (err) {
-  console.error("Media error:", err);
-  alert("Camera/Mic permission denied");
-  return;
-}
 
     if (localVideo.current) {
-  localVideo.current.srcObject = streamRef.current;
-}
+      localVideo.current.srcObject = streamRef.current;
+    }
 
     streamRef.current.getTracks().forEach((t) =>
       pc.current.addTrack(t, streamRef.current)
     );
   };
 
-const startCall = async () => {
-  if (isInCall) return;
+  const startCall = async () => {
+    if (isInCall) return;
 
-  setIsInCall(true);
+    setIsInCall(true);
 
-  createPeer();
-  await startMedia();
+    createPeer();
+    await startMedia();
 
-  const off = await pc.current.createOffer();
-  await pc.current.setLocalDescription(off);
+    const off = await pc.current.createOffer();
+    await pc.current.setLocalDescription(off);
 
-  socket.emit("call-user", { to: user, offer: off });
-};
+    socket.emit("call-user", { to: user, offer: off });
+  };
 
-const acceptCall = async () => {
-  if (isInCall) {
-    socket.emit("user-busy", { to: user });
-    return;
-  }
+  const acceptCall = async () => {
+    if (isInCall) {
+      socket.emit("user-busy", { to: user });
+      return;
+    }
 
-  setIsInCall(true);
+    // ✅ Stop ringtone FIRST before doing anything
+    stopRingtone();
 
-  createPeer();
-  await startMedia();
-  await pc.current.setRemoteDescription(offer);
+    setCallStatus("in-call");
+    setIsInCall(true);
 
-  const ans = await pc.current.createAnswer();
-  await pc.current.setLocalDescription(ans);
+    createPeer();
+    await startMedia();
+    await pc.current.setRemoteDescription(offer);
 
-  socket.emit("answer-call", { to: user, answer: ans });
-};
+    const ans = await pc.current.createAnswer();
+    await pc.current.setLocalDescription(ans);
+
+    socket.emit("answer-call", { to: user, answer: ans });
+  };
+
+  const declineCall = () => {
+    stopRingtone();
+    socket.emit("call-ended", { to: user });
+    cleanup();
+  };
+
+  /* ========== RINGTONE HELPER ========== */
+  const stopRingtone = () => {
+    if (ringtoneRef.current) {
+      ringtoneRef.current.pause();
+      ringtoneRef.current.currentTime = 0;
+    }
+  };
+
 
 
   /* ========== SOCKET ========== */
@@ -176,7 +188,6 @@ const acceptCall = async () => {
         pendingCandidates.current.push(candidate);
         return;
       }
-
       try {
         await pc.current.addIceCandidate(candidate);
       } catch (err) {
@@ -184,31 +195,32 @@ const acceptCall = async () => {
       }
     });
 
-  socket.on("call-accepted", async ({ answer }) => {
-  if (!pc.current) return;
+    socket.on("call-accepted", async ({ answer }) => {
+      if (!pc.current) return;
 
-  clearTimeout(callTimeoutRef.current);
-  ringtoneRef.current?.pause();
+      clearTimeout(callTimeoutRef.current);
 
-  await pc.current.setRemoteDescription(answer);
+      // ✅ Caller side: no ringtone was playing, but stop just in case
+      stopRingtone();
 
-  for (const c of pendingCandidates.current) {
-    try {
-      await pc.current.addIceCandidate(c);
-    } catch (err) {
-      console.log("ICE add error:", err);
-    }
-  }
+      await pc.current.setRemoteDescription(answer);
 
-  pendingCandidates.current = [];
-});
+      for (const c of pendingCandidates.current) {
+        try {
+          await pc.current.addIceCandidate(c);
+        } catch (err) {
+          console.log("ICE add error:", err);
+        }
+      }
 
+      pendingCandidates.current = [];
+      setCallStatus("in-call");
+    });
 
-
-  socket.on("user-busy", () => {
-  alert("User is already in another call.");
-  cleanup();
-});
+    socket.on("user-busy", () => {
+      alert("User is already in another call.");
+      cleanup();
+    });
 
     socket.on("call-ended", cleanup);
 
@@ -219,11 +231,10 @@ const acceptCall = async () => {
       }
     });
 
-  socket.on("call-missed", () => {
-  alert("Call was not answered.");
-  cleanup();
-});
-
+    socket.on("call-missed", () => {
+      alert("Call was not answered.");
+      cleanup();
+    });
 
     return () => {
       socket.off("call-accepted");
@@ -231,78 +242,79 @@ const acceptCall = async () => {
       socket.off("call-ended");
       socket.off("call_message");
       socket.off("call-missed");
+      socket.off("user-busy");
     };
   }, [showChat]);
 
-useEffect(() => {
-  if (incoming) return;
 
-  startCall();
+  // ✅ OUTGOING CALL — caller side, NO ringtone at all
+  useEffect(() => {
+    if (incoming) return;
 
-  callTimeoutRef.current = setTimeout(() => {
-    if (!pc.current || pc.current.connectionState !== "connected") {
-      socket.emit("call-missed", { to: user });
-      alert("Call not answered ❌");
-      cleanup();
-    }
-  }, 20000);
+    startCall();
 
-  return () => clearTimeout(callTimeoutRef.current);
-}, []);
+    callTimeoutRef.current = setTimeout(() => {
+      if (!pc.current || pc.current.connectionState !== "connected") {
+        socket.emit("call-missed", { to: user });
+        alert("Call not answered ❌");
+        cleanup();
+      }
+    }, 20000);
 
-useEffect(() => {
-  if (!incoming) return;
+    return () => clearTimeout(callTimeoutRef.current);
+  }, []);
 
-  ringtoneRef.current?.play().catch(() => {});
 
-  acceptCall();
+  // ✅ INCOMING CALL — play ringtone, wait for user to tap Accept/Decline
+  useEffect(() => {
+    if (!incoming) return;
 
-  return () => {
-    ringtoneRef.current?.pause();
-  };
-}, []);
+    // Play ringtone for receiver
+    ringtoneRef.current?.play().catch(() => {});
+
+    // DO NOT auto-call acceptCall() here — wait for button press
+
+    return () => {
+      stopRingtone();
+    };
+  }, []);
 
 
 
   /* ========== CONTROLS ========== */
   const toggleAudio = () => {
     const t = streamRef.current?.getAudioTracks?.()[0];
-if (!t) return;
-
+    if (!t) return;
     t.enabled = !t.enabled;
     setAudioOn(t.enabled);
   };
 
   const toggleVideo = () => {
-   const t = streamRef.current?.getVideoTracks?.()[0];
-if (!t) return;
+    const t = streamRef.current?.getVideoTracks?.()[0];
+    if (!t) return;
     t.enabled = !t.enabled;
     setVideoOn(t.enabled);
   };
 
-const cleanup = () => {
-  setIsInCall(false);
+  const cleanup = () => {
+    setIsInCall(false);
 
-  clearTimeout(callTimeoutRef.current);   // 🔥 important
-  ringtoneRef.current?.pause();           // 🔥 important
-  ringtoneRef.current.currentTime = 0;    // reset ringtone
+    clearTimeout(callTimeoutRef.current);
+    stopRingtone();
 
-  streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current?.getTracks().forEach((t) => t.stop());
 
-  if (pc.current?._timer) {
-  clearInterval(pc.current._timer);
-}
+    if (pc.current?._timer) {
+      clearInterval(pc.current._timer);
+    }
 
-if (pc.current) {
-  pc.current.close();
-  pc.current = null;
+    if (pc.current) {
+      pc.current.close();
+      pc.current = null;
+    }
 
-}
-
-
-  onClose();
-};
-
+    onClose();
+  };
 
   const endCall = () => {
     socket.emit("end-call", { to: user });
@@ -337,11 +349,69 @@ if (pc.current) {
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
+  /* ========== INCOMING RINGING SCREEN ========== */
+  // ✅ Show Accept/Decline screen while ringtone is playing
+  if (callStatus === "ringing") {
+    return (
+      <>
+        <audio ref={ringtoneRef} src={ringtone} loop />
+        <div style={styles.overlay}>
+          <div style={styles.ringingScreen}>
+            {/* Animated Avatar */}
+            <div style={styles.ringingAvatarWrapper}>
+              <div style={styles.ringingRing1} />
+              <div style={styles.ringingRing2} />
+              <div style={styles.ringingAvatar}>
+                {user?.charAt(0).toUpperCase()}
+              </div>
+            </div>
+
+            <p style={styles.ringingName}>{user}</p>
+            <p style={styles.ringingSubtext}>Incoming Video Call...</p>
+
+            {/* Accept / Decline Buttons */}
+            <div style={styles.ringingButtons}>
+              <div style={styles.ringingBtnGroup}>
+                <button
+                  onClick={declineCall}
+                  style={{ ...styles.ringingBtn, background: "linear-gradient(135deg, #ef4444, #dc2626)" }}
+                >
+                  <span style={styles.ringingBtnIcon}>📵</span>
+                </button>
+                <span style={styles.ringingBtnLabel}>Decline</span>
+              </div>
+
+              <div style={styles.ringingBtnGroup}>
+                <button
+                  onClick={acceptCall}
+                  style={{ ...styles.ringingBtn, background: "linear-gradient(135deg, #22c55e, #16a34a)" }}
+                >
+                  <span style={styles.ringingBtnIcon}>📞</span>
+                </button>
+                <span style={styles.ringingBtnLabel}>Accept</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <style>{`
+          @keyframes ringPulse {
+            0% { transform: scale(1); opacity: 0.6; }
+            100% { transform: scale(1.8); opacity: 0; }
+          }
+        `}</style>
+      </>
+    );
+  }
+
+  /* ========== MAIN CALL UI ========== */
   return (
     <>
+      <audio ref={ringtoneRef} src={ringtone} loop />
+
       <style>{`
         @keyframes slideInRight {
           from { transform: translateX(100%); }
@@ -412,14 +482,13 @@ if (pc.current) {
           {/* Remote Video or Avatar */}
           <div style={styles.remoteContainer}>
             {remoteVideoOn ? (
-          <video
-          ref={remoteVideo}
-          autoPlay
-          playsInline
-          muted={false}
-          style={styles.remote}
-        />
-
+              <video
+                ref={remoteVideo}
+                autoPlay
+                playsInline
+                muted={false}
+                style={styles.remote}
+              />
             ) : (
               <div style={styles.cameraOffContainer}>
                 <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
@@ -430,7 +499,7 @@ if (pc.current) {
               </div>
             )}
           </div>
-          
+
           {/* Local Video or Avatar */}
           <div className="local-video-container" style={styles.localContainer}>
             {videoOn ? (
@@ -454,7 +523,11 @@ if (pc.current) {
                 <div style={styles.userName}>{user}</div>
                 <div style={styles.callStatus}>
                   <span style={styles.statusDot}>●</span>
-                  <span>{formatDuration(callDuration)}</span>
+                  <span>
+                    {callStatus === "calling"
+                      ? "Calling..."
+                      : formatDuration(callDuration)}
+                  </span>
                 </div>
               </div>
             </div>
@@ -471,8 +544,8 @@ if (pc.current) {
               className="control-button"
               style={{
                 ...styles.controlButton,
-                background: audioOn 
-                  ? "rgba(255, 255, 255, 0.95)" 
+                background: audioOn
+                  ? "rgba(255, 255, 255, 0.95)"
                   : "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
                 color: audioOn ? "#333" : "#fff",
               }}
@@ -486,8 +559,8 @@ if (pc.current) {
               className="control-button"
               style={{
                 ...styles.controlButton,
-                background: videoOn 
-                  ? "rgba(255, 255, 255, 0.95)" 
+                background: videoOn
+                  ? "rgba(255, 255, 255, 0.95)"
                   : "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
                 color: videoOn ? "#333" : "#fff",
               }}
@@ -563,9 +636,10 @@ if (pc.current) {
                     <div
                       style={{
                         ...styles.messageBubble,
-                        background: m.from === me
-                          ? "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)"
-                          : "#f5f5f5",
+                        background:
+                          m.from === me
+                            ? "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)"
+                            : "#f5f5f5",
                         color: m.from === me ? "#fff" : "#333",
                       }}
                     >
@@ -578,7 +652,7 @@ if (pc.current) {
                           download={m.fileName}
                           style={{
                             ...styles.fileLink,
-                            color: m.from === me ? "#fff" : "#ff6b35"
+                            color: m.from === me ? "#fff" : "#ff6b35",
                           }}
                         >
                           <span style={styles.fileIcon}>📎</span>
@@ -589,8 +663,8 @@ if (pc.current) {
                       )}
                       <div style={styles.messageTime}>
                         {new Date(m.time).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit'
+                          hour: "2-digit",
+                          minute: "2-digit",
                         })}
                       </div>
                     </div>
@@ -624,7 +698,6 @@ if (pc.current) {
           </div>
         )}
       </div>
-       <audio ref={ringtoneRef} src={ringtone} loop />
     </>
   );
 }
@@ -637,6 +710,101 @@ const styles = {
     zIndex: 9999,
     display: "flex",
   },
+
+  /* ===== RINGING SCREEN ===== */
+  ringingScreen: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)",
+    gap: "16px",
+  },
+  ringingAvatarWrapper: {
+    position: "relative",
+    width: "140px",
+    height: "140px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ringingRing1: {
+    position: "absolute",
+    width: "140px",
+    height: "140px",
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.3)",
+    animation: "ringPulse 1.5s ease-out infinite",
+  },
+  ringingRing2: {
+    position: "absolute",
+    width: "140px",
+    height: "140px",
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.2)",
+    animation: "ringPulse 1.5s ease-out infinite 0.5s",
+  },
+  ringingAvatar: {
+    width: "100px",
+    height: "100px",
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.95)",
+    color: "#ff6b35",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "48px",
+    fontWeight: "800",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+    zIndex: 1,
+  },
+  ringingName: {
+    color: "#fff",
+    fontSize: "28px",
+    fontWeight: "700",
+    margin: "16px 0 4px",
+    textShadow: "0 2px 8px rgba(0,0,0,0.2)",
+  },
+  ringingSubtext: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: "16px",
+    fontWeight: "500",
+    margin: 0,
+  },
+  ringingButtons: {
+    display: "flex",
+    gap: "60px",
+    marginTop: "40px",
+  },
+  ringingBtnGroup: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "10px",
+  },
+  ringingBtn: {
+    width: "70px",
+    height: "70px",
+    borderRadius: "50%",
+    border: "none",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+    transition: "transform 0.2s ease",
+  },
+  ringingBtnIcon: {
+    fontSize: "30px",
+  },
+  ringingBtnLabel: {
+    color: "#fff",
+    fontSize: "14px",
+    fontWeight: "600",
+  },
+
+  /* ===== MAIN CALL ===== */
   remoteContainer: {
     width: "100%",
     height: "100%",

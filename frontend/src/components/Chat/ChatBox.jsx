@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import socket from "../../services/socket";
 import API from "../../services/api";
 
+// ✅ FIX: Full URL for uploaded files
+const BASE_URL = import.meta.env.VITE_API_BASE_URL.replace("/api", "");
+
 const formatTime = (ts) =>
   new Date(ts).toLocaleTimeString([], {
     hour: "2-digit",
@@ -49,10 +52,9 @@ export default function ChatBox({ user, onCall, onBack }) {
   useEffect(() => {
     if (!user) return;
 
-  API.get(`/chat/history/${me}/${user}`)
-  .then((res) => setMessages(res.data))
-  .catch(console.error);
-
+    API.get(`/chat/history/${me}/${user}`)
+      .then((res) => setMessages(res.data))
+      .catch(console.error);
 
     socket.emit("clear_unread", { me, other: user });
   }, [user]);
@@ -117,7 +119,6 @@ export default function ChatBox({ user, onCall, onBack }) {
       headers: { "Content-Type": "multipart/form-data" },
     });
     const data = res.data;
-
 
     socket.emit("private_message", {
       from: me,
@@ -228,8 +229,8 @@ export default function ChatBox({ user, onCall, onBack }) {
         {/* Chat Header */}
         <div style={styles.chatHeader}>
           <div style={styles.userInfo}>
-            <button 
-              onClick={onBack} 
+            <button
+              onClick={onBack}
               style={styles.backButton}
               className="back-button"
             >
@@ -293,18 +294,21 @@ export default function ChatBox({ user, onCall, onBack }) {
                           <audio controls src={m.audio} style={styles.audio} />
                         </div>
                       ) : m.file ? (
+                        // ✅ FIX: fileType check + BASE_URL prepended
                         m.fileType?.startsWith("image") ? (
                           <div style={styles.imageWrapper}>
                             <img
-                              src={m.file}
+                              src={`${BASE_URL}${m.file}`}
                               style={styles.imageMessage}
                               alt="attachment"
-                              onClick={() => setImageModal(m.file)}
+                              onClick={() => setImageModal(`${BASE_URL}${m.file}`)}
                             />
                           </div>
                         ) : (
+                          // ✅ FIX: href with BASE_URL + download attr
                           <a
-                            href={m.file}
+                            href={`${BASE_URL}${m.file}`}
+                            download={m.fileName}
                             target="_blank"
                             rel="noreferrer"
                             style={styles.fileLink}
@@ -332,11 +336,11 @@ export default function ChatBox({ user, onCall, onBack }) {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Image Modal */}
+        {/* Image Modal — ✅ FIX: uses full URL already set in state */}
         {imageModal && (
           <div style={styles.modalOverlay} onClick={() => setImageModal(null)}>
             <div style={styles.modalContent}>
-              <button 
+              <button
                 style={styles.modalClose}
                 onClick={() => setImageModal(null)}
               >
