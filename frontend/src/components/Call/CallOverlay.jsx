@@ -131,7 +131,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     // so that remote side gets video/audio in the SDP
     await startMedia();
     if (!pc.current) return;
-    const off = await pc.current.createOffer();
+    const off = await pc.current.createOffer({
+      offerToReceiveVideo: true,
+      offerToReceiveAudio: true
+    });
+
     await pc.current.setLocalDescription(off);
     socket.emit("call-user", { to: user, offer: off });
   };
@@ -139,27 +143,28 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   // ✅ Guard ref — prevents connectIncoming from running twice (React strict mode / double mount)
   const connectingRef = useRef(false);
 
-  const connectIncoming = async () => {
-    // Already connecting or connected — bail out immediately
-    if (connectingRef.current || isInCall) return;
-    connectingRef.current = true;
+const connectIncoming = async () => {
+  if (connectingRef.current || isInCall) return;
+  connectingRef.current = true;
 
-    setIsInCall(true);
-    createPeer();
-    await startMedia();
+  setIsInCall(true);
+  createPeer();
+  await startMedia();
 
-    // ✅ Safety — only proceed if peer is in "stable" signaling state
-    if (!pc.current || pc.current.signalingState !== "stable") {
-      console.warn("⚠️ Peer not stable, aborting setRemoteDescription");
-      connectingRef.current = false;
-      return;
-    }
+  if (!pc.current) return;
 
-    await pc.current.setRemoteDescription(offer);
-    const ans = await pc.current.createAnswer();
-    await pc.current.setLocalDescription(ans);
-    socket.emit("answer-call", { to: user, answer: ans });
-  };
+  await pc.current.setRemoteDescription(offer);
+
+  const ans = await pc.current.createAnswer({
+    offerToReceiveVideo: true,
+    offerToReceiveAudio: true
+  });
+
+  await pc.current.setLocalDescription(ans);
+
+  socket.emit("answer-call", { to: user, answer: ans });
+};
+
 
   /* ========== SOCKET ========== */
   useEffect(() => {
@@ -228,10 +233,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   // ✅ Incoming call — directly connect, NO ringing screen here
   // IncomingCall.jsx already showed the ringing UI, user already pressed Accept
-  useEffect(() => {
-    if (!incoming) return;
-    connectIncoming();
-  }, []);
+useEffect(() => {
+  if (!incoming || !offer) return;
+  connectIncoming();
+}, [incoming, offer]);
+
 
   // ✅ KEY FIX: Attach remoteStream to video element AFTER React renders it
   // ontrack fires before video element exists in DOM — so we store stream in state
