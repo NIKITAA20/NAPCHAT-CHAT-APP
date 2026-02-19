@@ -133,14 +133,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       setRemoteStream(stream);
 
-      // ✅ FIX 3: Force-attach directly inside ontrack — don't rely solely on useEffect timing
-      setTimeout(() => {
-        if (remoteVideo.current) {
-          remoteVideo.current.srcObject = stream;
-          remoteVideo.current.muted = false;
-          remoteVideo.current.play().catch((e) => console.warn("⚠️ ontrack play error:", e));
-        }
-      }, 0);
+      // ✅ Attach stream directly in ontrack — useEffect will also handle it as fallback
+      // NOTE: No manual .play() — mobile browsers handle autoplay; manual call causes AbortError
+      if (remoteVideo.current) {
+        remoteVideo.current.srcObject = stream;
+        remoteVideo.current.muted = false;
+      }
 
       const videoTrack = videoTracks[0];
       if (videoTrack) {
@@ -275,13 +273,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         pendingCandidates.current = [];
       }
 
-      // 🔥 FIX: Force caller to in-call immediately on signaling ACK
-      // Never rely on connectionState/ICE on mobile — signaling answer = call is live
+      // ✅ Signaling ACK — mark in-call immediately (mobile connectionState lags)
+      // Timer starts in onconnectionstatechange to sync both sides
       setCallStatus("in-call"); callStatusRef.current = "in-call";
       setIsInCall(true);
-      if (!pc.current._timer) {
-        pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
-      }
+      // Note: timer intentionally NOT started here — onconnectionstatechange owns it
+      // so caller and receiver start counting at the exact same moment
     });
 
     socket.on("user-busy", () => {
@@ -345,10 +342,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (remoteVideo.current.srcObject !== remoteStream) {
       remoteVideo.current.srcObject = remoteStream;
       remoteVideo.current.muted = false;
-      remoteVideo.current
-        .play()
-        .then(() => console.log("✅ Remote video playing"))
-        .catch((e) => console.warn("⚠️ Remote video play error (autoplay blocked?):", e));
+      // ✅ No manual .play() — causes AbortError on mobile when interrupted by remount
+      // autoPlay attribute on the <video> element handles playback
+      console.log("✅ Remote stream attached to video element");
     }
   }, [remoteStream]);
 

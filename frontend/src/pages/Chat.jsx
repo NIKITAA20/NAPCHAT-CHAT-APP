@@ -13,12 +13,21 @@ export default function Chat() {
 
   const ringTimer = useRef(null);
   const callAccepted = useRef(false); // ✅ FIX: track acceptance reliably (not React state)
+  const callActiveRef = useRef(false);  // ✅ FIX: guards duplicate incoming-call events
   const me = localStorage.getItem("username");
 
   /* 🔥 SOCKET LISTENERS (ONLY ONCE) */
   useEffect(() => {
     socket.on("incoming-call", ({ from, offer }) => {
       console.log("📞 INCOMING CALL FROM:", from);
+
+      // ✅ Guard: if call already showing/active, ignore duplicate incoming-call event
+      if (callActiveRef.current) {
+        console.warn("⚠️ Duplicate incoming-call ignored — call already active");
+        socket.emit("user-busy", { to: from });
+        return;
+      }
+      callActiveRef.current = true; // lock immediately — before any state update
 
       callAccepted.current = false; // reset for new call
       setCallUser(from);
@@ -47,8 +56,9 @@ export default function Chat() {
 
   const resetCall = () => {
     clearTimeout(ringTimer.current);
-    ringTimer.current = null;       // ✅ FIX 3: nullify so stale ref can't fire
+    ringTimer.current = null;
     callAccepted.current = false;
+    callActiveRef.current = false;  // ✅ unlock for next call
     setCallUser(null);
     setIncomingOffer(null);
     setShowCall(false);
@@ -109,9 +119,10 @@ export default function Chat() {
           <IncomingCall
             from={callUser}
             onAccept={() => {
-              callAccepted.current = true;  // ✅ FIX: mark accepted before clearing timer
+              callAccepted.current = true;
+              callActiveRef.current = true; // ✅ block any duplicate incoming-call
               clearTimeout(ringTimer.current);
-              ringTimer.current = null;     // ✅ FIX: nullify immediately
+              ringTimer.current = null;
               setShowCall(true);
             }}
             onReject={resetCall}
@@ -121,7 +132,6 @@ export default function Chat() {
         {/* 📞 CALL SCREEN */}
         {callUser && showCall && (
           <CallOverlay
-            key={callUser}              // ✅ prevents stale component reuse
             user={callUser}
             incoming={!!incomingOffer}
             offer={incomingOffer}
