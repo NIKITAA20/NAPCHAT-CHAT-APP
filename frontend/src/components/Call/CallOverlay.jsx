@@ -38,13 +38,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const createPeer = () => {
     if (pc.current) return;
 
-    // ✅ Get credentials with fallback
     const turnUsername = import.meta.env.VITE_TURN_USERNAME;
     const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL;
 
-    // ✅ Build ICE servers array - only include TURN if credentials exist
     const iceServers = [
-      // Multiple STUN servers for better connectivity
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
       { urls: "stun:stun2.l.google.com:19302" },
@@ -52,7 +49,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       { urls: "stun:stun4.l.google.com:19302" },
     ];
 
-    // ✅ Only add TURN servers if both username and credential are defined
     if (turnUsername && turnCredential) {
       iceServers.push(
         {
@@ -77,7 +73,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         }
       );
     } else {
-      console.warn("⚠️ TURN credentials not found - using STUN only. Add VITE_TURN_USERNAME and VITE_TURN_CREDENTIAL to .env file");
+      console.warn("⚠️ TURN credentials not found - using STUN only.");
     }
 
     pc.current = new RTCPeerConnection({
@@ -86,11 +82,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     });
 
     pc.current.onconnectionstatechange = () => {
-      console.log("Connection state:", pc.current.connectionState);
-      if (pc.current.connectionState === "connected") {
+      console.log("🔗 Final connection state:", pc.current.connectionState);
+      if (pc.current.connectionState === "connected" && !pc.current._timer) {
+        // ✅ FIX: Guard prevents multiple timers if "connected" fires more than once
         setCallStatus("in-call");
-        const interval = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
-        pc.current._timer = interval;
+        setIsInCall(true);
+        pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
       }
       if (
         pc.current.connectionState === "disconnected" ||
@@ -101,7 +98,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     };
 
     pc.current.oniceconnectionstatechange = () => {
-      console.log("ICE state:", pc.current.iceConnectionState);
+      console.log("🧊 ICE state:", pc.current.iceConnectionState);
+    };
+
+    // ✅ DEBUG: Track ICE gathering progress
+    pc.current.onicegatheringstatechange = () => {
+      console.log("📡 ICE gathering:", pc.current.iceGatheringState);
     };
 
     pc.current.ontrack = (event) => {
@@ -110,16 +112,35 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       console.log("📡 Remote stream received", stream.getTracks());
 
+      // ✅ FIX: Debug video track count
+      const videoTracks = stream.getVideoTracks();
+      const audioTracks = stream.getAudioTracks();
+      console.log("📹 Video tracks:", videoTracks.length);
+      console.log("🔊 Audio tracks:", audioTracks.length);
+      console.log("🎞️ All tracks:", stream.getTracks().map(t => `${t.kind}:${t.readyState}`));
+
       setRemoteStream(stream);
 
-      const videoTrack = stream.getVideoTracks()[0];
+      const videoTrack = videoTracks[0];
       if (videoTrack) {
-        console.log("📹 Remote video track:", videoTrack.readyState);
+        console.log("📹 Remote video track state:", videoTrack.readyState, "| enabled:", videoTrack.enabled);
+        // ✅ FIX: Don't check readyState/enabled here — unreliable on remote side
+        // Let mute/unmute/ended events handle it
         setRemoteVideoOn(true);
-        videoTrack.onended = () => setRemoteVideoOn(false);
-        videoTrack.onmute = () => setRemoteVideoOn(false);
-        videoTrack.onunmute = () => setRemoteVideoOn(true);
+        videoTrack.onended = () => {
+          console.log("📹 Remote video track ended");
+          setRemoteVideoOn(false);
+        };
+        videoTrack.onmute = () => {
+          console.log("📹 Remote video track muted");
+          setRemoteVideoOn(false);
+        };
+        videoTrack.onunmute = () => {
+          console.log("📹 Remote video track unmuted");
+          setRemoteVideoOn(true);
+        };
       } else {
+        console.warn("⚠️ No remote video track received — remote may be audio-only");
         setRemoteVideoOn(false);
       }
     };
@@ -132,13 +153,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   };
 
   const startMedia = async () => {
-    // Release any existing tracks first
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
 
-    // Try video + audio first
     try {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
     } catch (err) {
@@ -157,7 +176,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   /* ========== OUTGOING CALL ========== */
   const startCall = async () => {
-    if (isInCall) return;
+    if (pc.current) return; // ✅ FIX: use pc.current check — isInCall can block offer creation
     setIsInCall(true);
     createPeer();
     await startMedia();
@@ -169,48 +188,73 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   const connectingRef = useRef(false);
 
+  /* ========== INCOMING CALL ========== */
   const connectIncoming = async () => {
-    if (connectingRef.current || isInCall) return;
+    console.log("📲 connectIncoming called | connectingRef:", connectingRef.current, "| pc.current:", !!pc.current);
+    if (connectingRef.current || pc.current) return; // ✅ FIX: pc.current is real source of truth, not React state
     connectingRef.current = true;
 
     setIsInCall(true);
     createPeer();
     await startMedia();
 
-    if (!pc.current || pc.current.signalingState !== "stable") {
-      console.warn("⚠️ Peer not stable, aborting setRemoteDescription");
-      connectingRef.current = false;
-      return;
-    }
+    try {
+      console.log("📋 offer received:", offer?.type, "| sdp length:", offer?.sdp?.length);
+      await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
 
-    await pc.current.setRemoteDescription(offer);
-    const ans = await pc.current.createAnswer();
-    await pc.current.setLocalDescription(ans);
-    socket.emit("answer-call", { to: user, answer: ans });
+      const ans = await pc.current.createAnswer();
+      await pc.current.setLocalDescription(ans);
+
+      socket.emit("answer-call", { to: user, answer: ans });
+
+      // ✅ FIX: Flush pending ICE candidates after remote description is set
+      for (const c of pendingCandidates.current) {
+        try {
+          await pc.current.addIceCandidate(c);
+        } catch (err) {
+          console.log("Pending ICE add error:", err);
+        }
+      }
+      pendingCandidates.current = [];
+
+      // ✅ FIX: Let connectionState "connected" handle setCallStatus — no manual override
+    } catch (err) {
+      console.error("❌ Incoming connect error:", err);
+      connectingRef.current = false;
+    }
   };
 
-  /* ========== SOCKET ========== */
+  /* ========== SOCKET EVENTS ========== */
   useEffect(() => {
     socket.on("ice-candidate", async ({ candidate }) => {
       if (!pc.current || !pc.current.remoteDescription) {
         pendingCandidates.current.push(candidate);
         return;
       }
-      try { await pc.current.addIceCandidate(candidate); }
-      catch (err) { console.error("ICE error:", err); }
+      try {
+        await pc.current.addIceCandidate(candidate);
+      } catch (err) {
+        console.error("ICE error:", err);
+      }
     });
 
     socket.on("call-accepted", async ({ answer }) => {
       if (!pc.current) return;
+      console.log("✅ call-accepted received | answer type:", answer?.type);
       clearTimeout(callTimeoutRef.current);
       stopRingtone();
       await pc.current.setRemoteDescription(answer);
-      for (const c of pendingCandidates.current) {
-        try { await pc.current.addIceCandidate(c); }
-        catch (err) { console.log("ICE add error:", err); }
+
+      // ✅ FIX 4: Flush pending ICE candidates after remote description is set
+      if (pendingCandidates.current.length) {
+        for (const c of pendingCandidates.current) {
+          try { await pc.current.addIceCandidate(c); }
+          catch (err) { console.log("ICE add error:", err); }
+        }
+        pendingCandidates.current = [];
       }
-      pendingCandidates.current = [];
-      setCallStatus("in-call");
+
+      // ✅ FIX 3: Removed setCallStatus("in-call") — connectionState handles it uniformly
     });
 
     socket.on("user-busy", () => {
@@ -258,12 +302,16 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     connectIncoming();
   }, []);
 
+  // ✅ FIX 2: Attach remote stream + call .play() to handle browser autoplay block
   useEffect(() => {
     if (!remoteStream || !remoteVideo.current) return;
     if (remoteVideo.current.srcObject !== remoteStream) {
       remoteVideo.current.srcObject = remoteStream;
       remoteVideo.current.muted = false;
-      console.log("✅ Remote stream attached to video element");
+      remoteVideo.current
+        .play()
+        .then(() => console.log("✅ Remote video playing"))
+        .catch((e) => console.warn("⚠️ Remote video play error (autoplay blocked?):", e));
     }
   }, [remoteStream]);
 
@@ -288,7 +336,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     stopRingtone();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     if (pc.current?._timer) clearInterval(pc.current._timer);
-    if (pc.current) { pc.current.close(); pc.current = null; }
+    if (pc.current) {
+      pc.current.close();
+      pc.current = null;
+    }
     onClose();
   };
 
@@ -306,7 +357,13 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const sendCallFile = (file) => {
     const r = new FileReader();
     r.onload = () =>
-      socket.emit("call_message", { to: user, from: me, file: r.result, fileName: file.name, time: Date.now() });
+      socket.emit("call_message", {
+        to: user,
+        from: me,
+        file: r.result,
+        fileName: file.name,
+        time: Date.now(),
+      });
     r.readAsDataURL(file);
   };
 
@@ -408,7 +465,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
             <button
               onClick={toggleAudio}
               className="control-button"
-              style={{ ...styles.controlButton, background: audioOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: audioOn ? "#333" : "#fff" }}
+              style={{
+                ...styles.controlButton,
+                background: audioOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)",
+                color: audioOn ? "#333" : "#fff",
+              }}
             >
               <span style={styles.controlIcon}>{audioOn ? "🎤" : "🔇"}</span>
               <span style={styles.controlText}>{audioOn ? "Mute" : "Unmute"}</span>
@@ -417,14 +478,21 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
             <button
               onClick={toggleVideo}
               className="control-button"
-              style={{ ...styles.controlButton, background: videoOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)", color: videoOn ? "#333" : "#fff" }}
+              style={{
+                ...styles.controlButton,
+                background: videoOn ? "rgba(255,255,255,0.95)" : "linear-gradient(135deg,#ef4444,#dc2626)",
+                color: videoOn ? "#333" : "#fff",
+              }}
             >
               <span style={styles.controlIcon}>📷</span>
               <span style={styles.controlText}>Camera</span>
             </button>
 
             <button
-              onClick={() => { setShowChat(!showChat); setUnreadDot(false); }}
+              onClick={() => {
+                setShowChat(!showChat);
+                setUnreadDot(false);
+              }}
               className="control-button"
               style={{ ...styles.controlButton, background: "rgba(255,255,255,0.95)", color: "#333", position: "relative" }}
             >
@@ -449,7 +517,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
           <div className="chat-sidebar" style={styles.chatSidebar}>
             <div style={styles.chatHeader}>
               <h3 style={styles.chatTitle}>In-Call Chat</h3>
-              <button onClick={() => setShowChat(false)} style={styles.closeChatButton}>✕</button>
+              <button onClick={() => setShowChat(false)} style={styles.closeChatButton}>
+                ✕
+              </button>
             </div>
             <div style={styles.chatList}>
               {callMessages.length === 0 ? (
@@ -459,11 +529,25 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
                 </div>
               ) : (
                 callMessages.map((m, i) => (
-                  <div key={i} style={{ ...styles.chatMessage, alignSelf: m.from === me ? "flex-end" : "flex-start" }}>
-                    <div style={{ ...styles.messageBubble, background: m.from === me ? "linear-gradient(135deg,#ff6b35,#ff8c42)" : "#f5f5f5", color: m.from === me ? "#fff" : "#333" }}>
+                  <div
+                    key={i}
+                    style={{ ...styles.chatMessage, alignSelf: m.from === me ? "flex-end" : "flex-start" }}
+                  >
+                    <div
+                      style={{
+                        ...styles.messageBubble,
+                        background:
+                          m.from === me ? "linear-gradient(135deg,#ff6b35,#ff8c42)" : "#f5f5f5",
+                        color: m.from === me ? "#fff" : "#333",
+                      }}
+                    >
                       <div style={styles.messageFrom}>{m.from === me ? "You" : m.from}</div>
                       {m.file ? (
-                        <a href={m.file} download={m.fileName} style={{ ...styles.fileLink, color: m.from === me ? "#fff" : "#ff6b35" }}>
+                        <a
+                          href={m.file}
+                          download={m.fileName}
+                          style={{ ...styles.fileLink, color: m.from === me ? "#fff" : "#ff6b35" }}
+                        >
                           <span style={styles.fileIcon}>📎</span>
                           <span>{m.fileName}</span>
                         </a>
@@ -490,7 +574,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
                 placeholder="Send a message..."
                 style={styles.chatInput}
               />
-              <button onClick={sendCallMessage} style={styles.sendBtn}>➤</button>
+              <button onClick={sendCallMessage} style={styles.sendBtn}>
+                ➤
+              </button>
             </div>
           </div>
         )}
