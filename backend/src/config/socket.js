@@ -66,8 +66,8 @@ socket.on("private_message", async (data) => {
         time: Date.now(),
       };
 
-      await redis.rPush(`chat:${socket.username}:${to}`, JSON.stringify(systemMsg));
-      await redis.rPush(`chat:${to}:${socket.username}`, JSON.stringify(systemMsg));
+      const chatKey = `chat:${[socket.username, to].sort().join(":")}`;
+      await redis.rPush(chatKey, JSON.stringify(systemMsg));
 
       socket.emit("receive_message", systemMsg);
       io.to(receiverSocket).emit("receive_message", systemMsg);
@@ -106,8 +106,8 @@ socket.on("private_message", async (data) => {
         time: Date.now(),
       };
 
-      await redis.rPush(`chat:${socket.username}:${to}`, JSON.stringify(systemMsg));
-      await redis.rPush(`chat:${to}:${socket.username}`, JSON.stringify(systemMsg));
+      const chatKey = `chat:${[socket.username, to].sort().join(":")}`;
+      await redis.rPush(chatKey, JSON.stringify(systemMsg));
 
       socket.emit("receive_message", systemMsg);
       socket.emit("call-ended");
@@ -123,7 +123,7 @@ socket.on("private_message", async (data) => {
 });
 
 
-    /* ================= CALL END (CONNECTED ONLY) ================= */
+    /* ================= CALL END ================= */
     socket.on("end-call", async ({ to }) => {
       const receiverSocket = await redis.hGet("users:online", to);
 
@@ -135,8 +135,8 @@ socket.on("private_message", async (data) => {
         time: Date.now(),
       };
 
-      await redis.rPush(`chat:${socket.username}:${to}`, JSON.stringify(systemMsg));
-      await redis.rPush(`chat:${to}:${socket.username}`, JSON.stringify(systemMsg));
+      const chatKey = `chat:${[socket.username, to].sort().join(":")}`;
+      await redis.rPush(chatKey, JSON.stringify(systemMsg));
 
       socket.emit("receive_message", systemMsg);
 
@@ -151,7 +151,6 @@ socket.on("private_message", async (data) => {
   try {
     const receiverSocket = await redis.hGet("users:online", to);
 
-    // ✅ Sorted chat key (important)
     const chatKey = `chat:${[socket.username, to].sort().join(":")}`;
 
     const systemMsg = {
@@ -163,16 +162,11 @@ socket.on("private_message", async (data) => {
       time: Date.now(),
     };
 
-    // Save message
     await redis.rPush(chatKey, JSON.stringify(systemMsg));
-
-    // Increase unread count
     await redis.hIncrBy(`unread:${to}`, socket.username, 1);
 
-    // Send to caller
     socket.emit("receive_message", systemMsg);
 
-    // Send to receiver if online
     if (receiverSocket) {
       io.to(receiverSocket).emit("receive_message", systemMsg);
     }
@@ -200,25 +194,6 @@ socket.on("private_message", async (data) => {
 
       socket.emit("call_message", payload);
     });
-
-
-
-    const usersInCall = new Set();
-
-socket.on("call-user", ({ to, offer }) => {
-  if (usersInCall.has(to)) {
-    socket.emit("user-busy");
-    return;
-  }
-
-  usersInCall.add(socket.id);
-  io.to(to).emit("incoming-call", { from: socket.id, offer });
-});
-
-socket.on("end-call", () => {
-  usersInCall.delete(socket.id);
-});
-
 
     /* ================= DISCONNECT ================= */
     socket.on("disconnect", async () => {
