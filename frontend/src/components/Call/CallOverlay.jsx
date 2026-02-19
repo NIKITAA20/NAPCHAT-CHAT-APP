@@ -22,6 +22,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [callDuration, setCallDuration] = useState(0);
   const [isInCall, setIsInCall] = useState(false);
   const [callStatus, setCallStatus] = useState(incoming ? "connecting" : "calling");
+  const callStatusRef = useRef(incoming ? "connecting" : "calling"); // ✅ ref mirrors state — no stale closure in timeouts
 
   const ringtoneRef = useRef(null);
   const callTimeoutRef = useRef(null);
@@ -85,7 +86,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       console.log("🔗 Final connection state:", pc.current.connectionState);
       if (pc.current.connectionState === "connected" && !pc.current._timer) {
         // ✅ FIX: Guard prevents multiple timers if "connected" fires more than once
-        setCallStatus("in-call");
+        setCallStatus("in-call"); callStatusRef.current = "in-call";
         setIsInCall(true);
         pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
       }
@@ -99,6 +100,17 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("🧊 ICE state:", pc.current.iceConnectionState);
+      // ✅ FIX 2: Update status when ICE connected — don't wait for connectionState
+      if (
+        pc.current.iceConnectionState === "connected" ||
+        pc.current.iceConnectionState === "completed"
+      ) {
+        setCallStatus("in-call"); callStatusRef.current = "in-call";
+        // Start timer here too if connectionState hasn't fired yet
+        if (!pc.current._timer) {
+          pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
+        }
+      }
     };
 
     // ✅ DEBUG: Track ICE gathering progress
@@ -120,6 +132,15 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       console.log("🎞️ All tracks:", stream.getTracks().map(t => `${t.kind}:${t.readyState}`));
 
       setRemoteStream(stream);
+
+      // ✅ FIX 3: Force-attach directly inside ontrack — don't rely solely on useEffect timing
+      setTimeout(() => {
+        if (remoteVideo.current) {
+          remoteVideo.current.srcObject = stream;
+          remoteVideo.current.muted = false;
+          remoteVideo.current.play().catch((e) => console.warn("⚠️ ontrack play error:", e));
+        }
+      }, 0);
 
       const videoTrack = videoTracks[0];
       if (videoTrack) {
@@ -245,7 +266,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       stopRingtone();
       await pc.current.setRemoteDescription(answer);
 
-      // ✅ FIX 4: Flush pending ICE candidates after remote description is set
+      // ✅ FIX: Flush pending ICE candidates after remote description is set
       if (pendingCandidates.current.length) {
         for (const c of pendingCandidates.current) {
           try { await pc.current.addIceCandidate(c); }
@@ -254,7 +275,13 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         pendingCandidates.current = [];
       }
 
-      // ✅ FIX 3: Removed setCallStatus("in-call") — connectionState handles it uniformly
+      // 🔥 FIX: Force caller to in-call immediately on signaling ACK
+      // Never rely on connectionState/ICE on mobile — signaling answer = call is live
+      setCallStatus("in-call"); callStatusRef.current = "in-call";
+      setIsInCall(true);
+      if (!pc.current._timer) {
+        pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
+      }
     });
 
     socket.on("user-busy", () => {
@@ -288,7 +315,17 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (incoming) return;
     startCall();
     callTimeoutRef.current = setTimeout(() => {
-      if (!pc.current || pc.current.connectionState !== "connected") {
+      // 🔥 FIX: Use callStatusRef — callStatus state is stale closure inside setTimeout
+      // callStatusRef is always current regardless of render cycles
+      const isAnswered =
+        callStatusRef.current === "in-call" ||
+        (pc.current && (
+          pc.current.connectionState === "connected" ||
+          pc.current.iceConnectionState === "connected" ||
+          pc.current.iceConnectionState === "completed"
+        ));
+
+      if (!isAnswered) {
         socket.emit("call-missed", { to: user });
         alert("Call not answered ❌");
         cleanup();
@@ -333,6 +370,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const cleanup = () => {
     setIsInCall(false);
     clearTimeout(callTimeoutRef.current);
+    callTimeoutRef.current = null; // ✅ nullify so stale ref cannot fire after close
     stopRingtone();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     if (pc.current?._timer) clearInterval(pc.current._timer);

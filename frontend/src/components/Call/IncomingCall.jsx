@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import socket from "../../services/socket";
+import ringtone from "../../assets/ringtone.mp3";
 
 export default function IncomingCall({ from, onAccept, onReject }) {
   const ringtoneRef = useRef(null);
