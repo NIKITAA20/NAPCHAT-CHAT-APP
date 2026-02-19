@@ -100,16 +100,13 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("🧊 ICE state:", pc.current.iceConnectionState);
-      // ✅ FIX 2: Update status when ICE connected — don't wait for connectionState
+      // ✅ Update status on ICE connected — mobile connectionState can lag
+      // Timer NOT started here — onconnectionstatechange owns timer (single source)
       if (
         pc.current.iceConnectionState === "connected" ||
         pc.current.iceConnectionState === "completed"
       ) {
         setCallStatus("in-call"); callStatusRef.current = "in-call";
-        // Start timer here too if connectionState hasn't fired yet
-        if (!pc.current._timer) {
-          pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
-        }
       }
     };
 
@@ -244,6 +241,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   };
 
   /* ========== SOCKET EVENTS ========== */
+  // ✅ FIX: showChatRef mirrors showChat state — lets us read current value inside
+  // socket listeners without adding showChat to deps (which caused re-registration)
+  const showChatRef = useRef(showChat);
+  useEffect(() => { showChatRef.current = showChat; }, [showChat]);
+
   useEffect(() => {
     socket.on("ice-candidate", async ({ candidate }) => {
       if (!pc.current || !pc.current.remoteDescription) {
@@ -290,10 +292,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     socket.on("call_message", (data) => {
       setCallMessages((prev) => [...prev, data]);
-      if (!showChat && data.from !== me) setUnreadDot(true);
+      if (!showChatRef.current && data.from !== me) setUnreadDot(true);
     });
 
-    socket.on("call-missed", () => {
+    socket.on("missed-call", () => {
       alert("Call was not answered.");
       cleanup();
     });
@@ -303,10 +305,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       socket.off("ice-candidate");
       socket.off("call-ended");
       socket.off("call_message");
-      socket.off("call-missed");
+      socket.off("missed-call");
       socket.off("user-busy");
     };
-  }, [showChat]);
+  }, []); // ✅ FIX: empty deps — never re-registers listeners
 
   useEffect(() => {
     if (incoming) return;
@@ -323,7 +325,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         ));
 
       if (!isAnswered) {
-        socket.emit("call-missed", { to: user });
+        socket.emit("missed-call", { to: user });
         alert("Call not answered ❌");
         cleanup();
       }
@@ -365,8 +367,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   const cleanup = () => {
     setIsInCall(false);
+    connectingRef.current = false; // ✅ FIX: reset so next incoming call isn't blocked
     clearTimeout(callTimeoutRef.current);
-    callTimeoutRef.current = null; // ✅ nullify so stale ref cannot fire after close
+    callTimeoutRef.current = null;
     stopRingtone();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     if (pc.current?._timer) clearInterval(pc.current._timer);

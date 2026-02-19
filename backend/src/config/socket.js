@@ -55,6 +55,13 @@ socket.on("private_message", async (data) => {
 
     /* ================= CALL START ================= */
     socket.on("call-user", async ({ to, offer }) => {
+      // ✅ Guard: username not registered yet — prevents incoming-call with from: undefined
+      if (!socket.username) {
+        console.warn("⚠️ call-user ignored — socket.username not set yet");
+        return;
+      }
+      console.log("📞 CALL USER EVENT:", socket.username, "->", to);
+
       const receiverSocket = await redis.hGet("users:online", to);
       if (!receiverSocket) return;
 
@@ -147,7 +154,7 @@ socket.on("private_message", async (data) => {
     });
 
     /* ================= MISSED CALL ================= */
-   socket.on("call-missed", async ({ to }) => {
+   socket.on("missed-call", async ({ to }) => {
   try {
     const receiverSocket = await redis.hGet("users:online", to);
 

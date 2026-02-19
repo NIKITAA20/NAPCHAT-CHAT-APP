@@ -11,54 +11,42 @@ export default function Chat() {
   const [incomingOffer, setIncomingOffer] = useState(null);
   const [showCall, setShowCall] = useState(false);
 
-  const ringTimer = useRef(null);
   const callAccepted = useRef(false); // ✅ FIX: track acceptance reliably (not React state)
   const callActiveRef = useRef(false);  // ✅ FIX: guards duplicate incoming-call events
   const me = localStorage.getItem("username");
 
   /* 🔥 SOCKET LISTENERS (ONLY ONCE) */
   useEffect(() => {
-    socket.on("incoming-call", ({ from, offer }) => {
-      console.log("📞 INCOMING CALL FROM:", from);
-
-      // ✅ Guard: if call already showing/active, ignore duplicate incoming-call event
-      if (callActiveRef.current) {
-        console.warn("⚠️ Duplicate incoming-call ignored — call already active");
-        socket.emit("user-busy", { to: from });
+    const handleIncoming = ({ from, offer }) => {
+      // ✅ Guard: block undefined (server emitted before username set) + duplicates
+      if (!from || callActiveRef.current) {
+        console.warn("⚠️ incoming-call blocked:", !from ? "from is undefined" : "call already active");
         return;
       }
-      callActiveRef.current = true; // lock immediately — before any state update
 
-      callAccepted.current = false; // reset for new call
+      console.log("📞 INCOMING CALL FROM:", from);
+      callActiveRef.current = true; // lock before any state update
+
       setCallUser(from);
       setIncomingOffer(offer);
       setShowCall(false);
+    };
 
-      ringTimer.current = setTimeout(() => {
-        // ✅ FIX 1: Guard — only fire if call was NOT accepted
-        if (!callAccepted.current) {
-          socket.emit("call-missed", { to: from }); // ✅ FIX 2: correct event name (was "missed-call")
-          socket.emit("end-call", { to: from });
-          resetCall();
-        }
-      }, 20000);
-    });
+    // ✅ Clear any stale listeners before registering — prevents duplicate on hot reload
+    socket.off("incoming-call");
+    socket.on("incoming-call", handleIncoming);
 
-    socket.on("call-ended", () => {
-      resetCall();
-    });
+    // ✅ REMOVED: call-ended listener — CallOverlay owns its own lifecycle
+    // Having it here caused double-cleanup: Chat resets state while overlay still mounted
 
     return () => {
-      socket.off("incoming-call");
-      socket.off("call-ended");
+      socket.off("incoming-call", handleIncoming);
     };
   }, []);
 
   const resetCall = () => {
-    clearTimeout(ringTimer.current);
-    ringTimer.current = null;
     callAccepted.current = false;
-    callActiveRef.current = false;  // ✅ unlock for next call
+    callActiveRef.current = false; // unlock for next call
     setCallUser(null);
     setIncomingOffer(null);
     setShowCall(false);
@@ -120,9 +108,7 @@ export default function Chat() {
             from={callUser}
             onAccept={() => {
               callAccepted.current = true;
-              callActiveRef.current = true; // ✅ block any duplicate incoming-call
-              clearTimeout(ringTimer.current);
-              ringTimer.current = null;
+              callActiveRef.current = true;
               setShowCall(true);
             }}
             onReject={resetCall}
@@ -132,6 +118,7 @@ export default function Chat() {
         {/* 📞 CALL SCREEN */}
         {callUser && showCall && (
           <CallOverlay
+            key={`${callUser}-${!!incomingOffer}`}
             user={callUser}
             incoming={!!incomingOffer}
             offer={incomingOffer}
