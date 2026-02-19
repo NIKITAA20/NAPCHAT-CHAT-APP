@@ -12,6 +12,7 @@ export default function Chat() {
   const [showCall, setShowCall] = useState(false);
 
   const ringTimer = useRef(null);
+  const callAccepted = useRef(false); // ✅ FIX: track acceptance reliably (not React state)
   const me = localStorage.getItem("username");
 
   /* 🔥 SOCKET LISTENERS (ONLY ONCE) */
@@ -19,14 +20,18 @@ export default function Chat() {
     socket.on("incoming-call", ({ from, offer }) => {
       console.log("📞 INCOMING CALL FROM:", from);
 
+      callAccepted.current = false; // reset for new call
       setCallUser(from);
       setIncomingOffer(offer);
       setShowCall(false);
 
       ringTimer.current = setTimeout(() => {
-        socket.emit("missed-call", { to: from });
-        socket.emit("end-call", { to: from });
-        resetCall();
+        // ✅ FIX 1: Guard — only fire if call was NOT accepted
+        if (!callAccepted.current) {
+          socket.emit("call-missed", { to: from }); // ✅ FIX 2: correct event name (was "missed-call")
+          socket.emit("end-call", { to: from });
+          resetCall();
+        }
       }, 20000);
     });
 
@@ -42,6 +47,8 @@ export default function Chat() {
 
   const resetCall = () => {
     clearTimeout(ringTimer.current);
+    ringTimer.current = null;       // ✅ FIX 3: nullify so stale ref can't fire
+    callAccepted.current = false;
     setCallUser(null);
     setIncomingOffer(null);
     setShowCall(false);
@@ -55,14 +62,13 @@ export default function Chat() {
   return (
     <>
       <div style={styles.container}>
-        {/* SIDEBAR - Pass selectedUser prop for mobile hiding */}
+        {/* SIDEBAR */}
         <Sidebar 
           setSelectedUser={setSelectedUser}
           selectedUser={selectedUser}
         />
 
         <div style={styles.mainContent}>
-          {/* Header - Hide on mobile when chat is selected */}
           <div 
             style={styles.header}
             className="main-header"
@@ -95,7 +101,6 @@ export default function Chat() {
               <h2 style={styles.emptyTitle}>Welcome to NAPCHAT</h2>
               <p style={styles.emptyText}>Select a contact to start chatting</p>
             </div>
-            
           )}
         </div>
 
@@ -104,7 +109,9 @@ export default function Chat() {
           <IncomingCall
             from={callUser}
             onAccept={() => {
+              callAccepted.current = true;  // ✅ FIX: mark accepted before clearing timer
               clearTimeout(ringTimer.current);
+              ringTimer.current = null;     // ✅ FIX: nullify immediately
               setShowCall(true);
             }}
             onReject={resetCall}
@@ -114,6 +121,7 @@ export default function Chat() {
         {/* 📞 CALL SCREEN */}
         {callUser && showCall && (
           <CallOverlay
+            key={callUser}              // ✅ prevents stale component reuse
             user={callUser}
             incoming={!!incomingOffer}
             offer={incomingOffer}
