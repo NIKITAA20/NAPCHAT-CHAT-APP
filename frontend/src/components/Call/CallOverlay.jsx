@@ -308,7 +308,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (incoming) return;
     startCall();
     callTimeoutRef.current = setTimeout(() => {
-      
+      const isAnswered =
         callStatusRef.current === "in-call" ||
         (pc.current && (
           pc.current.connectionState === "connected" ||
