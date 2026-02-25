@@ -35,6 +35,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     }
   };
 
+  const startTimer = () => {
+    if (!pc.current || pc.current._timer) return;
+    pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
+  };
+
   /* ========== PEER ========== */
   const createPeer = () => {
     if (pc.current) return;
@@ -84,12 +89,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.onconnectionstatechange = () => {
       console.log("🔗 Final connection state:", pc.current.connectionState);
-      if (pc.current.connectionState === "connected" && !pc.current._timer) {
-        // ✅ FIX: Guard prevents multiple timers if "connected" fires more than once
-        setCallStatus("in-call"); callStatusRef.current = "in-call";
-        setIsInCall(true);
-        pc.current._timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
-      }
       if (
         pc.current.connectionState === "disconnected" ||
         pc.current.connectionState === "failed"
@@ -100,13 +99,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("🧊 ICE state:", pc.current.iceConnectionState);
-
-      if (
-        pc.current.iceConnectionState === "connected" ||
-        pc.current.iceConnectionState === "completed"
-      ) {
-        setCallStatus("in-call"); callStatusRef.current = "in-call";
-      }
     };
 
     // ✅ DEBUG: Track ICE gathering progress
@@ -129,10 +121,17 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       setRemoteStream(stream);
 
-    
       if (remoteVideo.current) {
         remoteVideo.current.srcObject = stream;
         remoteVideo.current.muted = false;
+        try {
+          const p = remoteVideo.current.play();
+          if (p && typeof p.then === "function") {
+            p.catch(() => {});
+          }
+        } catch {
+          // ignore autoplay errors
+        }
       }
 
       const videoTrack = videoTracks[0];
@@ -220,7 +219,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       socket.emit("answer-call", { to: user, answer: ans });
 
-      // ✅ FIX: Flush pending ICE candidates after remote description is set
+      // Flush pending ICE candidates after remote description is set
       for (const c of pendingCandidates.current) {
         try {
           await pc.current.addIceCandidate(c);
@@ -230,7 +229,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       }
       pendingCandidates.current = [];
 
-      // ✅ FIX: Let connectionState "connected" handle setCallStatus — no manual override
+      // Mark receiver side as in-call immediately after answering
+      setCallStatus("in-call");
+      callStatusRef.current = "in-call";
+      setIsInCall(true);
+      startTimer();
     } catch (err) {
       console.error("❌ Incoming connect error:", err);
       connectingRef.current = false;
@@ -262,7 +265,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       stopRingtone();
       await pc.current.setRemoteDescription(answer);
 
-      // ✅ FIX: Flush pending ICE candidates after remote description is set
+      // Flush pending ICE candidates after remote description is set
       if (pendingCandidates.current.length) {
         for (const c of pendingCandidates.current) {
           try { await pc.current.addIceCandidate(c); }
@@ -271,10 +274,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         pendingCandidates.current = [];
       }
 
-      
+      // Mark caller side as in-call and start timer
       setCallStatus("in-call"); callStatusRef.current = "in-call";
       setIsInCall(true);
-      
+      startTimer();
     });
 
     socket.on("user-busy", () => {
