@@ -100,8 +100,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.oniceconnectionstatechange = () => {
       console.log("🧊 ICE state:", pc.current.iceConnectionState);
-      // ✅ Update status on ICE connected — mobile connectionState can lag
-      // Timer NOT started here — onconnectionstatechange owns timer (single source)
+
       if (
         pc.current.iceConnectionState === "connected" ||
         pc.current.iceConnectionState === "completed"
@@ -130,25 +129,16 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       setRemoteStream(stream);
 
-      // Attach stream directly in ontrack and try to play the element.
+    
       if (remoteVideo.current) {
         remoteVideo.current.srcObject = stream;
         remoteVideo.current.muted = false;
-        try {
-          const p = remoteVideo.current.play();
-          if (p && typeof p.then === "function") {
-            p.catch(() => {});
-          }
-        } catch {
-          // ignore autoplay errors
-        }
       }
 
       const videoTrack = videoTracks[0];
       if (videoTrack) {
         console.log("📹 Remote video track state:", videoTrack.readyState, "| enabled:", videoTrack.enabled);
-        // ✅ FIX: Don't check readyState/enabled here — unreliable on remote side
-        // Let mute/unmute/ended events handle it
+
         setRemoteVideoOn(true);
         videoTrack.onended = () => {
           console.log("📹 Remote video track ended");
@@ -240,9 +230,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       }
       pendingCandidates.current = [];
 
-      // Mark receiver side as in-call once answer is created & sent.
-      setCallStatus("in-call");
-      callStatusRef.current = "in-call";
+      // ✅ FIX: Let connectionState "connected" handle setCallStatus — no manual override
     } catch (err) {
       console.error("❌ Incoming connect error:", err);
       connectingRef.current = false;
@@ -250,8 +238,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   };
 
   /* ========== SOCKET EVENTS ========== */
-  // ✅ FIX: showChatRef mirrors showChat state — lets us read current value inside
-  // socket listeners without adding showChat to deps (which caused re-registration)
+
   const showChatRef = useRef(showChat);
   useEffect(() => { showChatRef.current = showChat; }, [showChat]);
 
@@ -284,12 +271,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         pendingCandidates.current = [];
       }
 
-      // ✅ Signaling ACK — mark in-call immediately (mobile connectionState lags)
-      // Timer starts in onconnectionstatechange to sync both sides
+      
       setCallStatus("in-call"); callStatusRef.current = "in-call";
       setIsInCall(true);
-      // Note: timer intentionally NOT started here — onconnectionstatechange owns it
-      // so caller and receiver start counting at the exact same moment
+      
     });
 
     socket.on("user-busy", () => {
@@ -323,9 +308,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (incoming) return;
     startCall();
     callTimeoutRef.current = setTimeout(() => {
-      // 🔥 FIX: Use callStatusRef — callStatus state is stale closure inside setTimeout
-      // callStatusRef is always current regardless of render cycles
-      const isAnswered =
+      
         callStatusRef.current === "in-call" ||
         (pc.current && (
           pc.current.connectionState === "connected" ||
@@ -347,20 +330,13 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     connectIncoming();
   }, []);
 
-  // Attach remote stream and explicitly try to play it (handles some autoplay cases)
+
   useEffect(() => {
     if (!remoteStream || !remoteVideo.current) return;
     if (remoteVideo.current.srcObject !== remoteStream) {
       remoteVideo.current.srcObject = remoteStream;
       remoteVideo.current.muted = false;
-      try {
-        const p = remoteVideo.current.play();
-        if (p && typeof p.then === "function") {
-          p.catch(() => {});
-        }
-      } catch {
-        // ignore autoplay errors
-      }
+
       console.log("✅ Remote stream attached to video element");
     }
   }, [remoteStream]);
@@ -382,7 +358,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   const cleanup = () => {
     setIsInCall(false);
-    connectingRef.current = false; // ✅ FIX: reset so next incoming call isn't blocked
+    connectingRef.current = false;
     clearTimeout(callTimeoutRef.current);
     callTimeoutRef.current = null;
     stopRingtone();
