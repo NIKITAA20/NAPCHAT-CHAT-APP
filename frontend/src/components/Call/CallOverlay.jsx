@@ -130,11 +130,18 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       setRemoteStream(stream);
 
-      // ✅ Attach stream directly in ontrack — useEffect will also handle it as fallback
-      // NOTE: No manual .play() — mobile browsers handle autoplay; manual call causes AbortError
+      // Attach stream directly in ontrack and try to play the element.
       if (remoteVideo.current) {
         remoteVideo.current.srcObject = stream;
         remoteVideo.current.muted = false;
+        try {
+          const p = remoteVideo.current.play();
+          if (p && typeof p.then === "function") {
+            p.catch(() => {});
+          }
+        } catch {
+          // ignore autoplay errors
+        }
       }
 
       const videoTrack = videoTracks[0];
@@ -233,7 +240,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       }
       pendingCandidates.current = [];
 
-      // ✅ FIX: Let connectionState "connected" handle setCallStatus — no manual override
+      // Mark receiver side as in-call once answer is created & sent.
+      setCallStatus("in-call");
+      callStatusRef.current = "in-call";
     } catch (err) {
       console.error("❌ Incoming connect error:", err);
       connectingRef.current = false;
@@ -338,14 +347,20 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     connectIncoming();
   }, []);
 
-  // ✅ FIX 2: Attach remote stream + call .play() to handle browser autoplay block
+  // Attach remote stream and explicitly try to play it (handles some autoplay cases)
   useEffect(() => {
     if (!remoteStream || !remoteVideo.current) return;
     if (remoteVideo.current.srcObject !== remoteStream) {
       remoteVideo.current.srcObject = remoteStream;
       remoteVideo.current.muted = false;
-      // ✅ No manual .play() — causes AbortError on mobile when interrupted by remount
-      // autoPlay attribute on the <video> element handles playback
+      try {
+        const p = remoteVideo.current.play();
+        if (p && typeof p.then === "function") {
+          p.catch(() => {});
+        }
+      } catch {
+        // ignore autoplay errors
+      }
       console.log("✅ Remote stream attached to video element");
     }
   }, [remoteStream]);
