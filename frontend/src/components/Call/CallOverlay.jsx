@@ -157,16 +157,19 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     }
 
     try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      // Force front camera on phones and ALWAYS require video for this UI
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: "user" },
+      });
     } catch (err) {
-      console.warn("Video+Audio failed, trying audio only:", err.name);
-      try {
-        streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      } catch (audioErr) {
-        console.error("Audio also failed:", audioErr);
-        return;
-      }
+      console.error("❌ getUserMedia failed (audio+video):", err);
+      alert("Camera + microphone permission is required for video call. Please allow access and try again.");
+      return;
     }
+
+    const hasVideo = streamRef.current.getVideoTracks().length > 0;
+    setVideoOn(hasVideo);
 
     if (localVideo.current) localVideo.current.srcObject = streamRef.current;
     streamRef.current.getTracks().forEach((t) => pc.current.addTrack(t, streamRef.current));
