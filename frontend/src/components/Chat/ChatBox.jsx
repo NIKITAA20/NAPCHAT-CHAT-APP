@@ -315,7 +315,12 @@ export default function ChatBox({ user, onCall, onBack }) {
 
           <input
             value={msg}
-            onChange={(e) => setMsg(e.target.value)}
+            onChange={(e) => {
+              setMsg(e.target.value);
+              if (user) {
+                socket.emit("typing", { to: user });
+              }
+            }}
             onKeyPress={(e) => e.key === "Enter" && sendText()}
             placeholder="Type a message..."
             style={styles.input}

@@ -6,21 +6,27 @@ export default function IncomingCall({ from, onAccept, onReject }) {
   const ringtoneRef = useRef(null);
 
   useEffect(() => {
-    const audio = new Audio("/ringtone.mp3");
+    const audio = new Audio(ringtone);
     audio.loop = true;
     ringtoneRef.current = audio;
 
-    // ✅ Wait for audio to be ready before playing — fixes AbortError
-    audio.addEventListener("canplaythrough", () => {
-      audio.play().catch(() => {});
-    }, { once: true });
+    // Wait for audio to be ready before playing — fixes AbortError
+    audio.addEventListener(
+      "canplaythrough",
+      () => {
+        audio.play().catch(() => {});
+      },
+      { once: true }
+    );
 
-    // ✅ If caller cancels while ringing, auto-dismiss
+    // If caller cancels while ringing, auto-dismiss
     socket.on("call-ended", handleReject);
 
     return () => {
-      ringtoneRef.current.pause();
-      ringtoneRef.current.currentTime = 0;
+      if (ringtoneRef.current) {
+        ringtoneRef.current.pause();
+        ringtoneRef.current.currentTime = 0;
+      }
       socket.off("call-ended", handleReject);
     };
   }, []);
