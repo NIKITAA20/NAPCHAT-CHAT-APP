@@ -89,9 +89,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     pc.current.onconnectionstatechange = () => {
       console.log("🔗 Final connection state:", pc.current.connectionState);
+      // Some browsers briefly go to "disconnected" during network hiccups.
+      // Treat only terminal failure/closed as reason to fully clean up.
       if (
-        pc.current.connectionState === "disconnected" ||
-        pc.current.connectionState === "failed"
+        pc.current.connectionState === "failed" ||
+        pc.current.connectionState === "closed"
       ) {
         cleanup();
       }
@@ -112,7 +114,6 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
       console.log("📡 Remote stream received", stream.getTracks());
 
-      // ✅ FIX: Debug video track count
       const videoTracks = stream.getVideoTracks();
       const audioTracks = stream.getAudioTracks();
       console.log("📹 Video tracks:", videoTracks.length);
@@ -134,23 +135,8 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
         }
       }
 
-      const videoTrack = videoTracks[0];
-      if (videoTrack) {
-        console.log("📹 Remote video track state:", videoTrack.readyState, "| enabled:", videoTrack.enabled);
-
+      if (videoTracks.length > 0) {
         setRemoteVideoOn(true);
-        videoTrack.onended = () => {
-          console.log("📹 Remote video track ended");
-          setRemoteVideoOn(false);
-        };
-        videoTrack.onmute = () => {
-          console.log("📹 Remote video track muted");
-          setRemoteVideoOn(false);
-        };
-        videoTrack.onunmute = () => {
-          console.log("📹 Remote video track unmuted");
-          setRemoteVideoOn(true);
-        };
       } else {
         console.warn("⚠️ No remote video track received — remote may be audio-only");
         setRemoteVideoOn(false);
