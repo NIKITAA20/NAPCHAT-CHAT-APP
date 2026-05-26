@@ -130,7 +130,8 @@ export default function Login() {
 
 const styles = {
   container: {
-    height: "100vh",
+    minHeight: "100vh",
+    height: "100dvh",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",

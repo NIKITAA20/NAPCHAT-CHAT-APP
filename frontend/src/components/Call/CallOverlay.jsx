@@ -15,6 +15,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const [videoOn, setVideoOn] = useState(true);
   const [remoteVideoOn, setRemoteVideoOn] = useState(true);
   const [remoteStream, setRemoteStream] = useState(null);
+  // bumped on every ontrack so the attach-effect re-runs even when
+  // the underlying MediaStream reference is the same across events.
+  const [remoteStreamVersion, setRemoteStreamVersion] = useState(0);
   const [showChat, setShowChat] = useState(false);
   const [unreadDot, setUnreadDot] = useState(false);
   const [callMsg, setCallMsg] = useState("");
@@ -26,6 +29,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
   const ringtoneRef = useRef(null);
   const callTimeoutRef = useRef(null);
+  // Guards against duplicate end-call emits + cleanup re-entry
+  // (failed/closed state changes can fire multiple times on mobile).
+  const endNotifiedRef = useRef(false);
+  const cleanedUpRef = useRef(false);
 
   /* ========== RINGTONE HELPER ========== */
   const stopRingtone = () => {
@@ -88,19 +95,29 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     });
 
     pc.current.onconnectionstatechange = () => {
-      console.log("🔗 Final connection state:", pc.current.connectionState);
-      // Some browsers briefly go to "disconnected" during network hiccups.
-      // Treat only terminal failure/closed as reason to fully clean up.
-      if (
-        pc.current.connectionState === "failed" ||
-        pc.current.connectionState === "closed"
-      ) {
+      const state = pc.current?.connectionState;
+      console.log("🔗 Connection state:", state);
+      // "disconnected" is transient (mobile network hiccups) — give it
+      // a chance to recover. Only terminal states warrant teardown.
+      if (state === "failed") {
+        // Tell peer + server, otherwise peer is left stuck in CallOverlay
+        // with audio still playing and our screen already gone.
+        notifyPeerEnd();
+        cleanup();
+      } else if (state === "closed") {
         cleanup();
       }
     };
 
     pc.current.oniceconnectionstatechange = () => {
-      console.log("🧊 ICE state:", pc.current.iceConnectionState);
+      const ice = pc.current?.iceConnectionState;
+      console.log("🧊 ICE state:", ice);
+      // Some mobile browsers (esp. iOS Safari) don't reliably transition
+      // connectionState → "failed", but iceConnectionState does.
+      if (ice === "failed") {
+        notifyPeerEnd();
+        cleanup();
+      }
     };
 
     // ✅ DEBUG: Track ICE gathering progress
@@ -118,29 +135,21 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       const audioTracks = stream.getAudioTracks();
       console.log("📹 Video tracks:", videoTracks.length);
       console.log("🔊 Audio tracks:", audioTracks.length);
-      console.log("🎞️ All tracks:", stream.getTracks().map(t => `${t.kind}:${t.readyState}`));
 
+      // Track mute/unmute → live-update remote video visibility
+      // (e.g., remote toggles camera mid-call, or a track arrives muted)
+      if (event.track.kind === "video") {
+        event.track.onunmute = () => setRemoteVideoOn(true);
+        event.track.onmute = () => setRemoteVideoOn(false);
+      }
+
+      // Keep stream ref + a counter so useEffect re-fires even if
+      // ontrack hands us the same MediaStream reference twice
+      // (audio first, then video added to the same stream).
       setRemoteStream(stream);
+      setRemoteStreamVersion((v) => v + 1);
 
-      if (remoteVideo.current) {
-        remoteVideo.current.srcObject = stream;
-        remoteVideo.current.muted = false;
-        try {
-          const p = remoteVideo.current.play();
-          if (p && typeof p.then === "function") {
-            p.catch(() => {});
-          }
-        } catch {
-          // ignore autoplay errors
-        }
-      }
-
-      if (videoTracks.length > 0) {
-        setRemoteVideoOn(true);
-      } else {
-        console.warn("⚠️ No remote video track received — remote may be audio-only");
-        setRemoteVideoOn(false);
-      }
+      setRemoteVideoOn(videoTracks.length > 0 && !videoTracks[0].muted);
     };
 
     pc.current.onicecandidate = (event) => {
@@ -324,14 +333,19 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
 
   useEffect(() => {
-    if (!remoteStream || !remoteVideo.current) return;
-    if (remoteVideo.current.srcObject !== remoteStream) {
-      remoteVideo.current.srcObject = remoteStream;
-      remoteVideo.current.muted = false;
+    const el = remoteVideo.current;
+    if (!el || !remoteStream) return;
 
-      console.log("✅ Remote stream attached to video element");
+    if (el.srcObject !== remoteStream) {
+      el.srcObject = remoteStream;
+      el.muted = false;
+      console.log("✅ Remote stream attached to <video>");
     }
-  }, [remoteStream]);
+
+    // Some browsers don't autoplay reliably after srcObject swap
+    const p = el.play?.();
+    if (p && typeof p.then === "function") p.catch(() => {});
+  }, [remoteStream, remoteStreamVersion, remoteVideoOn]);
 
   /* ========== CONTROLS ========== */
   const toggleAudio = () => {
@@ -348,13 +362,26 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     setVideoOn(t.enabled);
   };
 
+  // Emits end-call exactly once per session. Used by both the manual
+  // End Call button and the connection-failure path so the peer (and
+  // server's activeCalls map) never gets left in a stuck "in-call" state.
+  const notifyPeerEnd = () => {
+    if (endNotifiedRef.current) return;
+    endNotifiedRef.current = true;
+    socket.emit("end-call", { to: user });
+  };
+
   const cleanup = () => {
+    if (cleanedUpRef.current) return; // pc.close() → onconnectionstatechange("closed") re-fires cleanup
+    cleanedUpRef.current = true;
+
     setIsInCall(false);
     connectingRef.current = false;
     clearTimeout(callTimeoutRef.current);
     callTimeoutRef.current = null;
     stopRingtone();
     streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
     if (pc.current?._timer) clearInterval(pc.current._timer);
     if (pc.current) {
       pc.current.close();
@@ -364,7 +391,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   };
 
   const endCall = () => {
-    socket.emit("end-call", { to: user });
+    notifyPeerEnd();
     cleanup();
   };
 
@@ -425,16 +452,20 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
             minWidth: 0,
           }}
         >
-          {/* Remote Video or Avatar */}
+          {/* Remote Video or Avatar
+              NOTE: <video> stays mounted always so the ref + srcObject
+              survive across remoteVideoOn toggles. We only hide it. */}
           <div style={styles.remoteContainer}>
-            {remoteVideoOn ? (
-              <video
-                ref={remoteVideo}
-                autoPlay
-                playsInline
-                style={styles.remote}
-              />
-            ) : (
+            <video
+              ref={remoteVideo}
+              autoPlay
+              playsInline
+              style={{
+                ...styles.remote,
+                display: remoteVideoOn ? "block" : "none",
+              }}
+            />
+            {!remoteVideoOn && (
               <div style={styles.cameraOffContainer}>
                 <div className="camera-off-avatar" style={styles.cameraOffAvatar}>
                   {user?.charAt(0).toUpperCase()}
@@ -445,11 +476,19 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
             )}
           </div>
 
-          {/* Local Video */}
+          {/* Local Video — same trick: keep mounted, toggle visibility */}
           <div className="local-video-container" style={styles.localContainer}>
-            {videoOn ? (
-              <video ref={localVideo} autoPlay muted playsInline style={styles.local} />
-            ) : (
+            <video
+              ref={localVideo}
+              autoPlay
+              muted
+              playsInline
+              style={{
+                ...styles.local,
+                display: videoOn ? "block" : "none",
+              }}
+            />
+            {!videoOn && (
               <div style={styles.localCameraOff}>
                 <div style={styles.localCameraOffAvatar}>{me?.charAt(0).toUpperCase()}</div>
               </div>

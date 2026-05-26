@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import chatRoutes from "./routes/chat.routes.js";
 import mediaRoutes from "./routes/media.routes.js";
+import groupRoutes from "./routes/group.routes.js";
 
 dotenv.config();
 
@@ -32,5 +33,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/media", mediaRoutes);
+app.use("/api/groups", groupRoutes);
 app.use("/uploads", express.static("uploads"));
 export default app;
