@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 import socket from "../../services/socket";
 import ringtone from "../../assets/ringtone.mp3";
 
-export default function IncomingCall({ from, onAccept, onReject }) {
+export default function IncomingCall({ from, onAccept, onReject, accepting = false }) {
   const ringtoneRef = useRef(null);
 
   useEffect(() => {
@@ -38,9 +38,10 @@ export default function IncomingCall({ from, onAccept, onReject }) {
     }
   };
 
-  const handleAccept = () => {
+  const handleAccept = async () => {
+    if (accepting) return;
     stopRingtone();
-    onAccept(); // ✅ parent unmounts this, mounts CallOverlay with incoming=true
+    await onAccept?.();
   };
 
   const handleReject = () => {
@@ -99,9 +100,14 @@ export default function IncomingCall({ from, onAccept, onReject }) {
               <span style={styles.buttonIcon}>✕</span>
               <span style={styles.buttonText}>Decline</span>
             </button>
-            <button onClick={handleAccept} className="accept-button" style={styles.acceptButton}>
-              <span style={styles.buttonIcon}>✓</span>
-              <span style={styles.buttonText}>Accept</span>
+            <button
+              onClick={handleAccept}
+              className="accept-button"
+              style={{ ...styles.acceptButton, opacity: accepting ? 0.7 : 1 }}
+              disabled={accepting}
+            >
+              <span style={styles.buttonIcon}>{accepting ? "…" : "✓"}</span>
+              <span style={styles.buttonText}>{accepting ? "Connecting…" : "Accept"}</span>
             </button>
           </div>
 

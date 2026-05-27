@@ -17,6 +17,7 @@ export default function Sidebar({
   const [groups, setGroups] = useState([]);
   const [onlineUsers, setOnlineUsers] = useState({});
   const [unread, setUnread] = useState({});
+  const [activity, setActivity] = useState({}); // { username: ts, "group:<id>": ts }
   const [typingFrom, setTypingFrom] = useState(null);
   const [search, setSearch] = useState("");
 
@@ -60,17 +61,42 @@ export default function Sidebar({
   useEffect(() => {
     if (!me) return;
     API.get(`/chat/unread/${me}`).then((res) => setUnread(res.data)).catch(console.error);
+    API.get(`/chat/activity/${me}`).then((res) => setActivity(res.data || {})).catch(console.error);
     API.get(`/users/${me}/blocked`)
       .then((res) => setBlocked(new Set(res.data)))
       .catch(console.error);
   }, [me]);
 
   useEffect(() => {
-    socket.on("unread_update", ({ from, count }) => {
+    const bump = (key) => {
+      if (!key) return;
+      setActivity((prev) => ({ ...prev, [key]: Date.now() }));
+    };
+
+    const onUnread = ({ from, count }) => {
       setUnread((prev) => ({ ...prev, [from]: count }));
-    });
-    return () => socket.off("unread_update");
-  }, []);
+      if (count > 0) bump(from);
+    };
+
+    const onDm = (data) => {
+      if (data?.groupId) return;
+      const peer = data.from === me ? data.to : data.from;
+      if (peer) bump(peer);
+    };
+
+    const onGroup = (data) => {
+      if (data?.groupId) bump(`group:${data.groupId}`);
+    };
+
+    socket.on("unread_update", onUnread);
+    socket.on("receive_message", onDm);
+    socket.on("group_message", onGroup);
+    return () => {
+      socket.off("unread_update", onUnread);
+      socket.off("receive_message", onDm);
+      socket.off("group_message", onGroup);
+    };
+  }, [me]);
 
   /* ============== GROUPS ============== */
   const refreshGroups = useCallback(() => {
@@ -119,11 +145,20 @@ export default function Sidebar({
     (user) => {
       setSelectedUser(user);
       localStorage.setItem("activeChat", user);
+      setActivity((p) => ({ ...p, [user]: Date.now() }));
       setUnread((p) => ({ ...p, [user]: 0 }));
       socket.emit("clear_unread", { me, other: user });
       setMenuFor(null);
     },
     [me, setSelectedUser]
+  );
+
+  const openGroup = useCallback(
+    (g) => {
+      setActivity((p) => ({ ...p, [`group:${g.id}`]: Date.now() }));
+      setSelectedGroup?.(g);
+    },
+    [setSelectedGroup]
   );
 
   const handleBlock = async (target) => {
@@ -171,8 +206,21 @@ export default function Sidebar({
       users
         .filter((u) => u !== me)
         .filter((u) => !blocked.has(u))
-        .filter((u) => u.toLowerCase().includes(search.toLowerCase())),
-    [users, me, blocked, search]
+        .filter((u) => u.toLowerCase().includes(search.toLowerCase()))
+        .sort((a, b) => (activity[b] || 0) - (activity[a] || 0)),
+    [users, me, blocked, search, activity]
+  );
+
+  const sortedGroups = useMemo(
+    () =>
+      [...groups]
+        .filter((g) => g.name?.toLowerCase().includes(search.toLowerCase()))
+        .sort((a, b) => {
+          const ta = activity[`group:${a.id}`] || a.createdAt || 0;
+          const tb = activity[`group:${b.id}`] || b.createdAt || 0;
+          return tb - ta;
+        }),
+    [groups, activity, search]
   );
 
   /* ============== AVATAR HELPER ==============
@@ -291,13 +339,13 @@ export default function Sidebar({
           {groups.length === 0 && (
             <div style={styles.groupEmpty}>No groups yet. Tap “+ New” to start one.</div>
           )}
-          {groups.map((g) => {
+          {sortedGroups.map((g) => {
             const isActive = selectedGroup?.id === g.id;
             const live = activeGroupCalls[g.id]?.length > 0;
             return (
               <div
                 key={g.id}
-                onClick={() => setSelectedGroup?.(g)}
+                onClick={() => openGroup(g)}
                 style={{
                   ...styles.groupRow,
                   background: isActive ? "linear-gradient(135deg,#fff5f0 0%,#ffe8dc 100%)" : "transparent",
@@ -493,7 +541,7 @@ export default function Sidebar({
           onClose={() => setShowCreateGroup(false)}
           onCreated={(g) => {
             setGroups((prev) => [g, ...prev]);
-            setSelectedGroup?.(g);
+            openGroup(g);
           }}
         />
       )}

@@ -1,6 +1,7 @@
 import express from "express";
 import redis from "../config/redis.js";
 import { chatKey, loadMessages, TTL_MS } from "../utils/messageStore.js";
+import { getActivityMap } from "../utils/activity.js";
 
 const router = express.Router();
 
@@ -16,6 +17,16 @@ router.get("/history/:me/:user", async (req, res) => {
 // "X left" indicator without hardcoding the value.
 router.get("/ttl", (_req, res) => {
   res.json({ ttlMs: TTL_MS });
+});
+
+// ================= RECENT ACTIVITY (sidebar sort) =================
+router.get("/activity/:me", async (req, res) => {
+  try {
+    const map = await getActivityMap(req.params.me);
+    res.json(map);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ================= UNREAD COUNT =================

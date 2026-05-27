@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import socket from "../../services/socket";
 import ringtone from "../../assets/ringtone.mp3";
 
-export default function CallOverlay({ user, incoming, offer, onClose }) {
+export default function CallOverlay({ user, incoming, offer, onClose, initialStream = null }) {
   const me = localStorage.getItem("username");
 
   const localVideo = useRef(null);
@@ -34,6 +34,19 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const endNotifiedRef = useRef(false);
   const cleanedUpRef = useRef(false);
   const failedGraceTimerRef = useRef(null);
+  const cameraBusyRef = useRef(false);
+  const [localCameraBusy, setLocalCameraBusy] = useState(false);
+  // Accumulate remote tracks — audio often arrives before video on the
+  // same or different ontrack events.
+  const remoteStreamRef = useRef(null);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const stopLocalStream = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (localVideo.current) localVideo.current.srcObject = null;
+  };
 
   /* ========== RINGTONE HELPER ========== */
   const stopRingtone = () => {
@@ -146,8 +159,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     };
 
     pc.current.ontrack = (event) => {
-      const stream = event.streams?.[0];
-      if (!stream) return;
+      if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream();
+
+      const stream = remoteStreamRef.current;
+      const already = stream.getTracks().some((t) => t.id === event.track.id);
+      if (!already) stream.addTrack(event.track);
 
       console.log("📡 Remote stream received", stream.getTracks());
 
@@ -156,21 +172,11 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       console.log("📹 Video tracks:", videoTracks.length);
       console.log("🔊 Audio tracks:", audioTracks.length);
 
-      // Keep stream ref + a counter so useEffect re-fires even if
-      // ontrack hands us the same MediaStream reference twice
-      // (audio first, then video added to the same stream).
       setRemoteStream(stream);
       setRemoteStreamVersion((v) => v + 1);
 
-      // Don't hide video purely based on `track.muted` — some browsers
-      // keep `muted=true` during early decode/ICE stages even when the
-      // camera is actually on. Instead, show the tile if a video track
-      // exists AND it's either "live" or not muted.
-      if (videoTracks.length > 0) {
-        const t = videoTracks[0];
-        const show = t.readyState !== "ended";
-        setRemoteVideoOn(show);
-      }
+      const hasLiveVideo = videoTracks.some((t) => t.readyState !== "ended");
+      setRemoteVideoOn(hasLiveVideo);
     };
 
     pc.current.onicecandidate = (event) => {
@@ -180,29 +186,121 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     };
   };
 
+  /** Try several constraint sets; Windows often needs a short delay after stop(). */
+  const acquireLocalMedia = async () => {
+    stopLocalStream();
+    await sleep(400);
+
+    const attempts = [
+      () => navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: "user" } }),
+      () => navigator.mediaDevices.getUserMedia({ audio: true, video: true }),
+      () => navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+    ];
+
+    for (let round = 0; round < 3; round++) {
+      for (const attempt of attempts) {
+        try {
+          return await attempt();
+        } catch (err) {
+          const retryable =
+            err?.name === "NotReadableError" ||
+            err?.name === "OverconstrainedError" ||
+            err?.name === "AbortError";
+          if (!retryable) throw err;
+        }
+      }
+      await sleep(600 * (round + 1));
+    }
+    return null;
+  };
+
+  const attachLocalStreamToPeer = () => {
+    if (!streamRef.current || !pc.current) return;
+    streamRef.current.getTracks().forEach((t) => {
+      const exists = pc.current.getSenders().some((s) => s.track?.id === t.id);
+      if (!exists) pc.current.addTrack(t, streamRef.current);
+    });
+  };
+
+  /** Acquire a video track and attach it to our outgoing stream + peer connection. */
+  const addCameraTrack = async () => {
+    if (!pc.current || cameraBusyRef.current) return false;
+    if (streamRef.current?.getVideoTracks().some((t) => t.readyState === "live")) return true;
+
+    for (let i = 0; i < 2; i++) {
+      await sleep(800 * (i + 1));
+      try {
+        const vStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        });
+        const vt = vStream.getVideoTracks()[0];
+        if (!vt) continue;
+
+        if (!streamRef.current) streamRef.current = new MediaStream();
+        const oldV = streamRef.current.getVideoTracks()[0];
+        if (oldV) {
+          oldV.stop();
+          streamRef.current.removeTrack(oldV);
+        }
+        streamRef.current.addTrack(vt);
+
+        const sender = pc.current.getSenders().find((s) => s.track?.kind === "video");
+        if (sender) await sender.replaceTrack(vt);
+        else pc.current.addTrack(vt, streamRef.current);
+
+        setVideoOn(true);
+        if (localVideo.current) localVideo.current.srcObject = streamRef.current;
+        setLocalCameraBusy(false);
+        return true;
+      } catch (err) {
+        if (i === 1) {
+          cameraBusyRef.current = true;
+          setLocalCameraBusy(true);
+          console.warn("📷 Camera unavailable (device in use). Call continues audio-only.");
+        }
+      }
+    }
+    return false;
+  };
+
+  /** Mid-call: add camera then re-offer so peer starts receiving video. */
+  const renegotiateForCamera = async () => {
+    const added = await addCameraTrack();
+    if (!added || !pc.current) return false;
+    try {
+      const offer = await pc.current.createOffer();
+      await pc.current.setLocalDescription(offer);
+      socket.emit("call-renegotiate", { to: user, offer });
+      console.log("📷 Camera enabled + renegotiation offer sent");
+      return true;
+    } catch (err) {
+      console.error("Renegotiate offer failed:", err);
+      return false;
+    }
+  };
+
   const startMedia = async () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+    try {
+      streamRef.current = await acquireLocalMedia();
+    } catch (err) {
+      console.error("❌ getUserMedia failed:", err);
+      alert("Microphone/camera permission is required for calls.");
+      return false;
     }
 
-    try {
-      // Force front camera on phones and ALWAYS require video for this UI
-      streamRef.current = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: { facingMode: "user" },
-      });
-    } catch (err) {
-      console.error("❌ getUserMedia failed (audio+video):", err);
-      alert("Camera + microphone permission is required for video call. Please allow access and try again.");
-      return;
+    if (!streamRef.current) {
+      console.warn("⚠️ Continuing without local media");
+      return false;
     }
 
     const hasVideo = streamRef.current.getVideoTracks().length > 0;
     setVideoOn(hasVideo);
+    setAudioOn(streamRef.current.getAudioTracks().length > 0);
 
     if (localVideo.current) localVideo.current.srcObject = streamRef.current;
-    streamRef.current.getTracks().forEach((t) => pc.current.addTrack(t, streamRef.current));
+    attachLocalStreamToPeer();
+    return hasVideo;
   };
 
   /* ========== OUTGOING CALL ========== */
@@ -210,8 +308,10 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     if (pc.current) return; // ✅ FIX: use pc.current check — isInCall can block offer creation
     setIsInCall(true);
     createPeer();
-    await startMedia();
+    const hasVideo = await startMedia();
     if (!pc.current) return;
+    if (!hasVideo) await addCameraTrack();
+    attachLocalStreamToPeer();
     const off = await pc.current.createOffer();
     await pc.current.setLocalDescription(off);
     socket.emit("call-user", { to: user, offer: off });
@@ -227,11 +327,34 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
 
     setIsInCall(true);
     createPeer();
-    await startMedia();
+
+    let hasVideo = false;
+    if (initialStream) {
+      streamRef.current = initialStream;
+      hasVideo = initialStream.getVideoTracks().length > 0;
+      setVideoOn(hasVideo);
+      setAudioOn(initialStream.getAudioTracks().length > 0);
+      setLocalCameraBusy(!hasVideo);
+      cameraBusyRef.current = !hasVideo;
+      if (localVideo.current) localVideo.current.srcObject = initialStream;
+      attachLocalStreamToPeer();
+    } else {
+      hasVideo = await startMedia();
+      if (!hasVideo) {
+        cameraBusyRef.current = true;
+        setLocalCameraBusy(true);
+      }
+    }
 
     try {
       console.log("📋 offer received:", offer?.type, "| sdp length:", offer?.sdp?.length);
       await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
+
+      if (!hasVideo && !cameraBusyRef.current) {
+        await addCameraTrack();
+        attachLocalStreamToPeer();
+        hasVideo = !!streamRef.current?.getVideoTracks().length;
+      }
 
       const ans = await pc.current.createAnswer();
       await pc.current.setLocalDescription(ans);
@@ -316,6 +439,27 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       cleanup();
     });
 
+    socket.on("call-renegotiate", async ({ from, offer: reoffer }) => {
+      if (from !== user || !pc.current || !reoffer) return;
+      try {
+        await pc.current.setRemoteDescription(new RTCSessionDescription(reoffer));
+        const ans = await pc.current.createAnswer();
+        await pc.current.setLocalDescription(ans);
+        socket.emit("call-renegotiate-answer", { to: user, answer: ans });
+      } catch (err) {
+        console.error("Renegotiate (answer side) failed:", err);
+      }
+    });
+
+    socket.on("call-renegotiate-answer", async ({ answer }) => {
+      if (!pc.current || !answer) return;
+      try {
+        await pc.current.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (err) {
+        console.error("Renegotiate answer apply failed:", err);
+      }
+    });
+
     return () => {
       socket.off("call-accepted");
       socket.off("ice-candidate");
@@ -323,6 +467,8 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       socket.off("call_message");
       socket.off("missed-call");
       socket.off("user-busy");
+      socket.off("call-renegotiate");
+      socket.off("call-renegotiate-answer");
     };
   }, []); // ✅ FIX: empty deps — never re-registers listeners
 
@@ -352,6 +498,15 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     connectIncoming();
   }, []);
 
+  // If we joined audio-only because camera was busy, keep retrying in-call.
+  useEffect(() => {
+    if (videoOn || !isInCall || cameraBusyRef.current) return;
+    const t = setTimeout(() => {
+      renegotiateForCamera();
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [videoOn, isInCall]);
+
 
   useEffect(() => {
     const el = remoteVideo.current;
@@ -376,9 +531,12 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     setAudioOn(t.enabled);
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     const t = streamRef.current?.getVideoTracks?.()[0];
-    if (!t) return;
+    if (!t) {
+      await renegotiateForCamera();
+      return;
+    }
     t.enabled = !t.enabled;
     setVideoOn(t.enabled);
   };
@@ -404,8 +562,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
     clearTimeout(callTimeoutRef.current);
     callTimeoutRef.current = null;
     stopRingtone();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
+    stopLocalStream();
+    remoteStreamRef.current = null;
+    setRemoteStream(null);
     if (pc.current?._timer) clearInterval(pc.current._timer);
     if (pc.current) {
       pc.current.close();
@@ -515,6 +674,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
             {!videoOn && (
               <div style={styles.localCameraOff}>
                 <div style={styles.localCameraOffAvatar}>{me?.charAt(0).toUpperCase()}</div>
+                {localCameraBusy && (
+                  <div style={styles.localBusyHint}>Camera busy</div>
+                )}
               </div>
             )}
           </div>
@@ -678,8 +840,9 @@ const styles = {
   cameraOffSubtext: { color: "rgba(255,255,255,0.9)", fontSize: "18px", fontWeight: "500", marginTop: "8px" },
   localContainer: { position: "absolute", right: 20, bottom: 120, width: 160, height: 220, borderRadius: 20, overflow: "hidden", boxShadow: "0 8px 32px rgba(0,0,0,0.3)", border: "4px solid rgba(255,107,53,0.9)" },
   local: { width: "100%", height: "100%", objectFit: "cover" },
-  localCameraOff: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)" },
+  localCameraOff: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)" },
   localCameraOffAvatar: { width: "80px", height: "80px", borderRadius: "50%", background: "#fff", color: "#ff6b35", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "36px", fontWeight: "800", boxShadow: "0 4px 16px rgba(0,0,0,0.2)" },
+  localBusyHint: { color: "#fff", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.95 },
   topBar: { position: "absolute", top: 0, left: 0, right: 0, padding: "20px 24px", background: "linear-gradient(180deg, rgba(0,0,0,0.6) 0%, transparent 100%)", display: "flex", alignItems: "center", justifyContent: "space-between", zIndex: 10 },
   topBarLeft: { display: "flex", alignItems: "center", gap: "12px" },
   userAvatar: { width: "48px", height: "48px", borderRadius: "50%", background: "linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px", fontWeight: "700", boxShadow: "0 4px 12px rgba(255,107,53,0.4)" },

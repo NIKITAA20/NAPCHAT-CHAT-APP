@@ -29,6 +29,16 @@ const keySafetySeconds = () =>
 export const chatKey = (a, b) => `chat:${[a, b].sort().join(":")}`;
 export const groupChatKey = (groupId) => `chat:group:${groupId}`;
 
+// If this project was previously running with LIST-based chat storage,
+// some `chat:*` keys may still exist as LISTs. Our ZSET commands would
+// crash the server with WRONGTYPE. Since chats are now ephemeral anyway,
+// we can safely drop incompatible legacy keys on first touch.
+const ensureZset = async (key) => {
+  const t = await redis.type(key);
+  if (t === "none" || t === "zset") return;
+  await redis.del(key);
+};
+
 /**
  * Persist a message into a chat ZSET with INITIAL_TTL expiry.
  * The message gets a stable `id` so we can find + re-score it later.
@@ -39,6 +49,7 @@ export const saveMessage = async (key, msg) => {
   const expiresAt = now + INITIAL_TTL_MS;
   const enriched = { ...msg, id, expiresAt, seenAt: null };
 
+  await ensureZset(key);
   await redis.zRemRangeByScore(key, "-inf", now);
   await redis.zAdd(key, {
     score: expiresAt,
@@ -55,6 +66,7 @@ export const saveMessage = async (key, msg) => {
  */
 export const loadMessages = async (key) => {
   const now = Date.now();
+  await ensureZset(key);
   await redis.zRemRangeByScore(key, "-inf", now);
   const raw = await redis.zRange(key, 0, -1);
   return raw
@@ -79,6 +91,7 @@ export const markSeen = async (key, senderFilter) => {
   const now = Date.now();
   const newExpiry = now + SEEN_TTL_MS;
 
+  await ensureZset(key);
   const raw = await redis.zRange(key, 0, -1);
   const ids = [];
 

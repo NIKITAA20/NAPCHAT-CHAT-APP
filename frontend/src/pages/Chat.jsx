@@ -7,6 +7,7 @@ import GroupCallOverlay from "../components/Call/GroupCallOverlay";
 import IncomingGroupCall from "../components/Call/IncomingGroupCall";
 import API from "../services/api";
 import socket from "../services/socket";
+import { acquireCallMedia, stopMediaStream } from "../utils/mediaAcquire";
 
 export default function Chat() {
   const [selectedUser, setSelectedUser] = useState(null);
@@ -16,6 +17,8 @@ export default function Chat() {
   const [showCall, setShowCall] = useState(false);
   const [groupCallId, setGroupCallId] = useState(null);
   const [groupInvite, setGroupInvite] = useState(null); // { groupId, groupName, initiator }
+  const [prefetchedStream, setPrefetchedStream] = useState(null);
+  const [acceptingCall, setAcceptingCall] = useState(false);
 
   // Helpers — opening one target clears the other.
   const openUser = (u) => { setSelectedGroup(null); setSelectedUser(u); };
@@ -84,9 +87,23 @@ export default function Chat() {
   const resetCall = () => {
     callAccepted.current = false;
     callActiveRef.current = false;
+    stopMediaStream(prefetchedStream);
+    setPrefetchedStream(null);
+    setAcceptingCall(false);
     setCallUser(null);
     setIncomingOffer(null);
     setShowCall(false);
+  };
+
+  const handleAcceptIncoming = async () => {
+    callAccepted.current = true;
+    callActiveRef.current = true;
+    setAcceptingCall(true);
+  // Grab camera/mic while user gesture is fresh (right after Accept tap).
+    const stream = await acquireCallMedia();
+    setPrefetchedStream(stream);
+    setAcceptingCall(false);
+    setShowCall(true);
   };
 
   const handleBackToSidebar = () => {
@@ -158,11 +175,8 @@ export default function Chat() {
       {incomingOffer && !showCall && (
         <IncomingCall
           from={callUser}
-          onAccept={() => {
-            callAccepted.current = true;
-            callActiveRef.current = true;
-            setShowCall(true);
-          }}
+          accepting={acceptingCall}
+          onAccept={handleAcceptIncoming}
           onReject={resetCall}
         />
       )}
@@ -174,6 +188,7 @@ export default function Chat() {
           user={callUser}
           incoming={!!incomingOffer}
           offer={incomingOffer}
+          initialStream={incomingOffer ? prefetchedStream : null}
           onClose={resetCall}
         />
       )}

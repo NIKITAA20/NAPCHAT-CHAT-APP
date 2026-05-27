@@ -4,10 +4,17 @@ import { saveMessage, chatKey, markSeen, groupChatKey, SEEN_TTL_MS } from "../ut
 import { isBlocked } from "../controllers/block.controller.js";
 import { getGroupMembers } from "../controllers/group.controller.js";
 import { setIO } from "../utils/io.js";
+import { bumpDmActivity, bumpGroupActivity } from "../utils/activity.js";
 
 // Simple in-memory tracker for active 1:1 calls
 // key: username, value: other username
 const activeCalls = new Map();
+// De-dupe ringing phase so repeated "call-user" from same pair doesn't
+// spam multiple incoming-call events while callee is already handling one.
+// key format: "<caller>::<callee>"
+const pendingCallInvites = new Set();
+
+const inviteKey = (caller, callee) => `${caller}::${callee}`;
 
 // In-memory tracker for group video-call participants.
 //   groupCallParticipants: groupId  →  Set<username>
@@ -21,8 +28,14 @@ const endCallSession = (userA, userB) => {
   const peer = activeCalls.get(userA) || userB;
   if (peer) {
     activeCalls.delete(peer);
+    pendingCallInvites.delete(inviteKey(userA, peer));
+    pendingCallInvites.delete(inviteKey(peer, userA));
   }
   activeCalls.delete(userA);
+  if (userB) {
+    pendingCallInvites.delete(inviteKey(userA, userB));
+    pendingCallInvites.delete(inviteKey(userB, userA));
+  }
 };
 
 export const initSocket = (server) => {
@@ -99,6 +112,8 @@ export const initSocket = (server) => {
         time: Date.now(),
       });
 
+      await bumpDmActivity(from, to);
+
       socket.emit("receive_message", stored); // sender's own echo
 
       if (blocked) return;
@@ -132,6 +147,7 @@ export const initSocket = (server) => {
 
       const caller = socket.username;
       console.log("📞 CALL USER EVENT:", caller, "->", to);
+      const k = inviteKey(caller, to);
 
       const receiverSocket = await redis.hGet("users:online", to);
       if (!receiverSocket) return;
@@ -149,6 +165,12 @@ export const initSocket = (server) => {
         socket.emit("user-busy");
         return;
       }
+
+      if (pendingCallInvites.has(k)) {
+        console.warn("⚠️ duplicate incoming-call suppressed:", k);
+        return;
+      }
+      pendingCallInvites.add(k);
 
       // Mark both users as in-call
       activeCalls.set(caller, to);
@@ -173,6 +195,8 @@ export const initSocket = (server) => {
 
     /* ================= CALL ANSWER ================= */
     socket.on("answer-call", async ({ to, answer }) => {
+      pendingCallInvites.delete(inviteKey(to, socket.username));
+      pendingCallInvites.delete(inviteKey(socket.username, to));
       const receiverSocket = await redis.hGet("users:online", to);
       if (receiverSocket) {
         io.to(receiverSocket).emit("call-accepted", { answer });
@@ -187,8 +211,30 @@ export const initSocket = (server) => {
       }
     });
 
+    /* ================= MID-CALL RENEGOTIATION (e.g. camera turned on late) ================= */
+    socket.on("call-renegotiate", async ({ to, offer }) => {
+      if (!socket.username || !to || !offer) return;
+      const receiverSocket = await redis.hGet("users:online", to);
+      if (receiverSocket) {
+        io.to(receiverSocket).emit("call-renegotiate", {
+          from: socket.username,
+          offer,
+        });
+      }
+    });
+
+    socket.on("call-renegotiate-answer", async ({ to, answer }) => {
+      if (!socket.username || !to || !answer) return;
+      const receiverSocket = await redis.hGet("users:online", to);
+      if (receiverSocket) {
+        io.to(receiverSocket).emit("call-renegotiate-answer", { answer });
+      }
+    });
+
     /* ================= CALL REJECT ================= */
     socket.on("reject-call", async ({ to }) => {
+      pendingCallInvites.delete(inviteKey(to, socket.username));
+      pendingCallInvites.delete(inviteKey(socket.username, to));
       const receiverSocket = await redis.hGet("users:online", to);
 
       const stored = await saveMessage(chatKey(socket.username, to), {
@@ -230,6 +276,8 @@ export const initSocket = (server) => {
 
     /* ================= CALL END ================= */
     socket.on("end-call", async ({ to }) => {
+      pendingCallInvites.delete(inviteKey(socket.username, to));
+      pendingCallInvites.delete(inviteKey(to, socket.username));
       // Idempotency: if this call session is already torn down
       // (e.g. peer also emitted end-call, or missed-call already ran),
       // skip writing another "❌ Call ended" message. Both sides racing
@@ -267,6 +315,8 @@ export const initSocket = (server) => {
     /* ================= MISSED CALL ================= */
     socket.on("missed-call", async ({ to }) => {
       try {
+        pendingCallInvites.delete(inviteKey(socket.username, to));
+        pendingCallInvites.delete(inviteKey(to, socket.username));
         const receiverSocket = await redis.hGet("users:online", to);
 
         const stored = await saveMessage(chatKey(socket.username, to), {
@@ -326,6 +376,8 @@ export const initSocket = (server) => {
         from: socket.username,
         time: Date.now(),
       });
+
+      await bumpGroupActivity(groupId, members);
 
       // Fan out to every online member (including sender for echo).
       await Promise.all(
