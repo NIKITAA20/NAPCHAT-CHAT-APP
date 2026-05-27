@@ -33,6 +33,7 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   // (failed/closed state changes can fire multiple times on mobile).
   const endNotifiedRef = useRef(false);
   const cleanedUpRef = useRef(false);
+  const failedGraceTimerRef = useRef(null);
 
   /* ========== RINGTONE HELPER ========== */
   const stopRingtone = () => {
@@ -100,11 +101,20 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       // "disconnected" is transient (mobile network hiccups) — give it
       // a chance to recover. Only terminal states warrant teardown.
       if (state === "failed") {
-        // Tell peer + server, otherwise peer is left stuck in CallOverlay
-        // with audio still playing and our screen already gone.
-        notifyPeerEnd();
-        cleanup();
+        // Mobile can briefly hit "failed" during ICE renegotiation.
+        // Give it a short grace window before we tear down.
+        if (failedGraceTimerRef.current) clearTimeout(failedGraceTimerRef.current);
+        const peerSession = pc.current;
+        failedGraceTimerRef.current = setTimeout(() => {
+          if (!pc.current || pc.current !== peerSession) return;
+          if (pc.current?.connectionState === "failed" || pc.current?.iceConnectionState === "failed") {
+            notifyPeerEnd();
+            cleanup();
+          }
+        }, 5000);
       } else if (state === "closed") {
+        if (failedGraceTimerRef.current) clearTimeout(failedGraceTimerRef.current);
+        failedGraceTimerRef.current = null;
         cleanup();
       }
     };
@@ -115,8 +125,18 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       // Some mobile browsers (esp. iOS Safari) don't reliably transition
       // connectionState → "failed", but iceConnectionState does.
       if (ice === "failed") {
-        notifyPeerEnd();
-        cleanup();
+        if (failedGraceTimerRef.current) clearTimeout(failedGraceTimerRef.current);
+        const peerSession = pc.current;
+        failedGraceTimerRef.current = setTimeout(() => {
+          if (!pc.current || pc.current !== peerSession) return;
+          if (pc.current?.iceConnectionState === "failed") {
+            notifyPeerEnd();
+            cleanup();
+          }
+        }, 5000);
+      } else {
+        if (failedGraceTimerRef.current) clearTimeout(failedGraceTimerRef.current);
+        failedGraceTimerRef.current = null;
       }
     };
 
@@ -136,20 +156,21 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
       console.log("📹 Video tracks:", videoTracks.length);
       console.log("🔊 Audio tracks:", audioTracks.length);
 
-      // Track mute/unmute → live-update remote video visibility
-      // (e.g., remote toggles camera mid-call, or a track arrives muted)
-      if (event.track.kind === "video") {
-        event.track.onunmute = () => setRemoteVideoOn(true);
-        event.track.onmute = () => setRemoteVideoOn(false);
-      }
-
       // Keep stream ref + a counter so useEffect re-fires even if
       // ontrack hands us the same MediaStream reference twice
       // (audio first, then video added to the same stream).
       setRemoteStream(stream);
       setRemoteStreamVersion((v) => v + 1);
 
-      setRemoteVideoOn(videoTracks.length > 0 && !videoTracks[0].muted);
+      // Don't hide video purely based on `track.muted` — some browsers
+      // keep `muted=true` during early decode/ICE stages even when the
+      // camera is actually on. Instead, show the tile if a video track
+      // exists AND it's either "live" or not muted.
+      if (videoTracks.length > 0) {
+        const t = videoTracks[0];
+        const show = t.readyState !== "ended";
+        setRemoteVideoOn(show);
+      }
     };
 
     pc.current.onicecandidate = (event) => {
@@ -374,6 +395,9 @@ export default function CallOverlay({ user, incoming, offer, onClose }) {
   const cleanup = () => {
     if (cleanedUpRef.current) return; // pc.close() → onconnectionstatechange("closed") re-fires cleanup
     cleanedUpRef.current = true;
+
+    if (failedGraceTimerRef.current) clearTimeout(failedGraceTimerRef.current);
+    failedGraceTimerRef.current = null;
 
     setIsInCall(false);
     connectingRef.current = false;
